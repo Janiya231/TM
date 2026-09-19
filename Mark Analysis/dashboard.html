@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A/L Marks Analysis Dashboard</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Font Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="p-4 md:p-8">
+
+    <!-- Header / Navbar -->
+    <header class="glass-dark rounded-2xl p-4 mb-8 max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+        <div class="flex items-center gap-3">
+            <div class="p-3 bg-indigo-600/30 border border-indigo-500/30 rounded-xl text-indigo-400">
+                <i class="fa-solid fa-chart-line text-2xl"></i>
+            </div>
+            <div>
+                <h1 class="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 via-purple-300 to-pink-400">
+                    A/L Marks Analysis
+                </h1>
+                <p class="text-xs text-slate-400">Combined Maths • Chemistry • Physics Performance Tracking</p>
+            </div>
+        </div>
+        <div class="flex flex-wrap gap-3 items-center">
+            <button type="button" onclick="openModal()" class="px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl font-medium transition duration-200 shadow-lg shadow-indigo-500/20 flex items-center gap-2">
+                <i class="fa-solid fa-plus"></i> Add Paper
+            </button>
+            <button type="button" onclick="exportData()" class="px-3.5 py-2.5 glass-dark hover:bg-white/10 text-slate-300 rounded-xl text-sm font-medium transition flex items-center gap-2">
+                <i class="fa-solid fa-download"></i> Export JSON
+            </button>
+            <label class="px-3.5 py-2.5 glass-dark hover:bg-white/10 text-slate-300 rounded-xl text-sm font-medium transition flex items-center gap-2 cursor-pointer">
+                <i class="fa-solid fa-upload"></i> Import JSON
+                <input type="file" id="importFileInput" onchange="importData(event)" class="hidden" accept=".json">
+            </label>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto space-y-8">
+
+        <!-- SUMMARY STATS OVERVIEW -->
+        <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div class="glass-dark rounded-2xl p-5 border-l-4 border-indigo-500">
+                <div class="flex items-center justify-between text-slate-400 mb-2">
+                    <span class="text-xs font-semibold uppercase tracking-wider">Latest Average</span>
+                    <i class="fa-solid fa-gauge-high text-indigo-400"></i>
+                </div>
+                <div id="statLatestAvg" class="text-3xl font-extrabold text-white">-- %</div>
+                <div id="statLatestSub" class="text-xs text-slate-400 mt-1">From most recent paper slot</div>
+            </div>
+
+            <div class="glass-dark rounded-2xl p-5 border-l-4 border-emerald-500">
+                <div class="flex items-center justify-between text-slate-400 mb-2">
+                    <span class="text-xs font-semibold uppercase tracking-wider">Best Performance</span>
+                    <i class="fa-solid fa-trophy text-emerald-400"></i>
+                </div>
+                <div id="statBestScore" class="text-3xl font-extrabold text-white">-- %</div>
+                <div id="statBestSub" class="text-xs text-slate-400 mt-1">Highest individual score</div>
+            </div>
+
+            <div class="glass-dark rounded-2xl p-5 border-l-4 border-purple-500">
+                <div class="flex items-center justify-between text-slate-400 mb-2">
+                    <span class="text-xs font-semibold uppercase tracking-wider">Total Papers</span>
+                    <i class="fa-solid fa-file-lines text-purple-400"></i>
+                </div>
+                <div id="statTotalPapers" class="text-3xl font-extrabold text-white">0</div>
+                <div id="statPapersSub" class="text-xs text-slate-400 mt-1">Stored in IndexedDB</div>
+            </div>
+
+            <div class="glass-dark rounded-2xl p-5 border-l-4 border-amber-500">
+                <div class="flex items-center justify-between text-slate-400 mb-2">
+                    <span class="text-xs font-semibold uppercase tracking-wider">Recent Trend</span>
+                    <i class="fa-solid fa-arrow-trend-up text-amber-400"></i>
+                </div>
+                <div id="statTrend" class="text-3xl font-extrabold text-white">--</div>
+                <div id="statTrendSub" class="text-xs text-slate-400 mt-1">Comparing latest paper slots</div>
+            </div>
+        </section>
+
+        <!-- LIGHT GLASS GRAPH CONTAINER SECTION -->
+        <section class="glass-light rounded-2xl p-6 md:p-8 space-y-6">
+            <div class="flex flex-col lg:flex-row justify-between lg:items-center gap-4 border-b border-slate-200 pb-4">
+                <div>
+                    <h2 class="text-2xl font-extrabold text-slate-900 tracking-tight">A/L Performance Analysis</h2>
+                    <p class="text-sm text-slate-600 mt-0.5">Combined Mathematics, Chemistry and Physics performance over time</p>
+                </div>
+
+                <!-- CONTROLS AND TOGGLES -->
+                <div class="flex flex-wrap items-center gap-3">
+                    <!-- View Component Mode -->
+                    <div class="flex bg-slate-200/80 p-1 rounded-xl text-xs font-semibold text-slate-700">
+                        <button type="button" onclick="setComponentView('total')" id="btnViewTotal" class="px-3 py-1.5 rounded-lg transition bg-white text-slate-900 shadow-sm font-bold">Total Marks</button>
+                        <button type="button" onclick="setComponentView('mcq')" id="btnViewMcq" class="px-3 py-1.5 rounded-lg transition hover:text-slate-900 font-medium">MCQ</button>
+                        <button type="button" onclick="setComponentView('structured')" id="btnViewStructured" class="px-3 py-1.5 rounded-lg transition hover:text-slate-900 font-medium">Structured</button>
+                        <button type="button" onclick="setComponentView('essay')" id="btnViewEssay" class="px-3 py-1.5 rounded-lg transition hover:text-slate-900 font-medium">Essay</button>
+                    </div>
+
+                    <!-- Filter Range -->
+                    <select id="rangeFilter" onchange="renderChart()" class="bg-slate-100 border border-slate-300 text-slate-800 text-xs rounded-xl px-3 py-2 font-medium focus:ring-2 focus:ring-indigo-500 outline-none">
+                        <option value="all">All Papers</option>
+                        <option value="5">Last 5 Papers</option>
+                        <option value="10">Last 10 Papers</option>
+                    </select>
+
+                    <!-- Filter Date -->
+                    <select id="dateFilter" onchange="renderChart()" class="bg-slate-100 border border-slate-300 text-slate-800 text-xs rounded-xl px-3 py-2 font-medium focus:ring-2 focus:ring-indigo-500 outline-none">
+                        <option value="all">All Time</option>
+                        <option value="month">This Month</option>
+                        <option value="3months">Last 3 Months</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Subject Lines Toggles -->
+            <div class="flex flex-wrap items-center justify-between gap-4">
+                <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-xs font-bold text-slate-500 uppercase tracking-wider mr-1">Toggle Lines:</span>
+                    <button type="button" onclick="toggleSubject('all')" id="btnSubAll" class="px-3 py-1 rounded-full text-xs font-semibold border border-slate-300 bg-slate-800 text-white shadow-sm transition ring-2 ring-indigo-600 font-extrabold">All Subjects</button>
+                    <button type="button" onclick="toggleSubject('Combined Mathematics')" id="btnSubMaths" class="px-3 py-1 rounded-full text-xs font-semibold border border-blue-400 bg-blue-100 text-blue-800 shadow-sm transition">Combined Maths</button>
+                    <button type="button" onclick="toggleSubject('Chemistry')" id="btnSubChem" class="px-3 py-1 rounded-full text-xs font-semibold border border-purple-400 bg-purple-100 text-purple-800 shadow-sm transition">Chemistry</button>
+                    <button type="button" onclick="toggleSubject('Physics')" id="btnSubPhy" class="px-3 py-1 rounded-full text-xs font-semibold border border-emerald-400 bg-emerald-100 text-emerald-800 shadow-sm transition">Physics</button>
+                    <button type="button" onclick="toggleSubject('Average')" id="btnSubAvg" class="px-3 py-1 rounded-full text-xs font-semibold border border-amber-400 bg-amber-100 text-amber-800 shadow-sm transition">Average</button>
+                </div>
+                <div class="text-xs text-slate-500 italic">
+                    * Y-Axis is normalized to 0–100% scale for precise comparative analysis
+                </div>
+            </div>
+
+            <!-- Main Chart Canvas Container -->
+            <div class="relative w-full h-[420px] pt-2">
+                <canvas id="combinedChart"></canvas>
+            </div>
+        </section>
+
+        <!-- RECENT PAPERS TABLE -->
+        <section class="glass-dark rounded-2xl p-6 space-y-4">
+            <div class="flex justify-between items-center">
+                <h3 class="text-xl font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-list-check text-indigo-400"></i> Recorded Papers History
+                </h3>
+                <span id="paperCountBadge" class="px-3 py-1 bg-indigo-500/20 border border-indigo-500/30 rounded-full text-xs font-semibold text-indigo-300">0 Items</span>
+            </div>
+
+            <div class="overflow-x-auto rounded-xl border border-slate-700/60">
+                <table class="w-full text-left text-sm text-slate-300">
+                    <thead class="bg-slate-800/80 text-xs uppercase font-semibold text-slate-400">
+                        <tr>
+                            <th class="p-3.5">Date</th>
+                            <th class="p-3.5">Subject</th>
+                            <th class="p-3.5">Paper / Code</th>
+                            <th class="p-3.5">Components Breakdown</th>
+                            <th class="p-3.5 text-right">Total Score</th>
+                            <th class="p-3.5 text-right">Percentage</th>
+                            <th class="p-3.5 text-center">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="papersTableBody" class="divide-y divide-slate-800">
+                        <!-- Dynamic paper rows -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ADD / EDIT PAPER MODAL -->
+    <div id="paperModal" class="fixed inset-0 z-50 hidden bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="glass-dark rounded-2xl w-full max-w-lg border border-slate-700/80 shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div class="flex justify-between items-center p-5 border-b border-slate-800">
+                <h3 id="modalTitle" class="text-lg font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-pen-to-square text-indigo-400"></i> Add New Paper Record
+                </h3>
+                <button type="button" onclick="closeModal()" class="text-slate-400 hover:text-white transition">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+
+            <form id="paperForm" class="p-5 space-y-4">
+                <input type="hidden" id="paperId">
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">Subject *</label>
+                        <select id="formSubject" onchange="toggleFormComponents()" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+                            <option value="Combined Mathematics">Combined Mathematics</option>
+                            <option value="Chemistry">Chemistry</option>
+                            <option value="Physics">Physics</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">Paper Date *</label>
+                        <input type="date" id="formDate" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-medium text-slate-400 mb-1">Paper Name / Code *</label>
+                    <input type="text" id="formName" placeholder="e.g. Paper 01 or Model Paper 05" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+                </div>
+
+                <!-- COMPONENT BREAKDOWN FOR CHEMISTRY & PHYSICS -->
+                <div id="componentBreakdownSection" class="space-y-3 bg-slate-900/60 p-4 rounded-xl border border-slate-800">
+                    <div class="text-xs font-semibold text-slate-300 uppercase tracking-wider flex justify-between">
+                        <span>Component Breakdown</span>
+                        <span class="text-indigo-400">Obtained / Max</span>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 items-center">
+                        <span class="text-xs text-slate-400">MCQ Marks</span>
+                        <div class="flex gap-1">
+                            <input type="number" id="formMcqObt" min="0" step="0.5" placeholder="18" oninput="calculateTotalFromComponents()" class="w-1/2 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white">
+                            <span class="text-slate-500 font-bold text-xs flex items-center">/</span>
+                            <input type="number" id="formMcqMax" min="1" step="0.5" value="25" oninput="calculateTotalFromComponents()" class="w-1/2 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-400">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 items-center">
+                        <span class="text-xs text-slate-400">Structured Essay</span>
+                        <div class="flex gap-1">
+                            <input type="number" id="formStructObt" min="0" step="0.5" placeholder="32" oninput="calculateTotalFromComponents()" class="w-1/2 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white">
+                            <span class="text-slate-500 font-bold text-xs flex items-center">/</span>
+                            <input type="number" id="formStructMax" min="1" step="0.5" value="50" oninput="calculateTotalFromComponents()" class="w-1/2 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-400">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 items-center">
+                        <span class="text-xs text-slate-400">Essay Marks</span>
+                        <div class="flex gap-1">
+                            <input type="number" id="formEssayObt" min="0" step="0.5" placeholder="12" oninput="calculateTotalFromComponents()" class="w-1/2 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white">
+                            <span class="text-slate-500 font-bold text-xs flex items-center">/</span>
+                            <input type="number" id="formEssayMax" min="1" step="0.5" value="25" oninput="calculateTotalFromComponents()" class="w-1/2 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-400">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- OVERALL SCORE INPUT -->
+                <div id="simpleTotalSection" class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">Total Score Obtained *</label>
+                        <input type="number" id="formTotalObt" min="0" step="0.5" required placeholder="62" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-400 mb-1">Max Score Possible *</label>
+                        <input type="number" id="formTotalMax" min="1" step="0.5" value="100" required class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-3 pt-4 border-t border-slate-800">
+                    <button type="button" onclick="closeModal()" class="px-4 py-2 rounded-xl text-slate-400 hover:text-white text-sm font-medium transition">Cancel</button>
+                    <button type="button" id="btnSavePaper" onclick="submitPaperForm(event)" class="px-5 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-sm font-medium transition shadow-lg shadow-indigo-500/20 flex items-center gap-2">
+                        <i class="fa-solid fa-floppy-disk"></i> Save Paper Record
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- TOAST CONTAINER -->
+    <div id="toastContainer"></div>
+
+    <script src="script.js"></script>
+</body>
+</html>

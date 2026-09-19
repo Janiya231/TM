@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0b0d12">
+  <title>RecordFlow — Recording Manager</title>
+  <link rel="stylesheet" href="css/style.css">
+  <style>
+    /* Keep the panel control visually attached to the sidebar. */
+    .sidebar-toggle{position:fixed!important;top:27px;left:196px;z-index:30;margin:0!important}
+    .sidebar.collapsed~.main .sidebar-toggle{left:18px}
+    @media(max-width:1000px){.sidebar-toggle{left:166px}}
+    @media(max-width:700px){.sidebar-toggle,.sidebar.collapsed~.main .sidebar-toggle{left:196px}}
+    body{font-family:Inter,"Noto Sans Sinhala","Segoe UI",system-ui,sans-serif}
+    .sidebar{width:232px;padding:18px 12px;background:linear-gradient(180deg,rgba(18,21,15,.98),rgba(12,14,10,.96));border-right-color:rgba(194,218,166,.13)}
+    .brand{padding:9px 9px 28px}.brand-mark{box-shadow:0 8px 20px rgba(199,255,69,.12)}
+    .nav-item{min-height:43px;padding:10px 11px;font-weight:600}.nav-item span{opacity:.9}.nav-item.active{box-shadow:inset 3px 0 var(--accent),0 5px 16px rgba(137,187,43,.06)}
+    .main{margin-left:232px;padding:30px 38px 64px}.topbar{margin-bottom:30px}.topbar h1{font-size:30px;font-weight:780;letter-spacing:-.06em}.topbar p{max-width:620px;font-size:13px;line-height:1.6}.top-actions .btn{padding:10px 15px}
+    .stats{gap:18px}.card{border-color:rgba(196,214,179,.14);box-shadow:0 14px 32px rgba(0,0,0,.15),inset 0 1px 0 rgba(255,255,255,.025)}.card:hover{transform:translateY(-2px);box-shadow:0 18px 38px rgba(0,0,0,.2),inset 0 1px 0 rgba(255,255,255,.03);transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease}
+    .stats .card{min-height:126px;padding:20px;background:linear-gradient(145deg,rgba(232,255,211,.045),transparent 48%),var(--panel)}.stats .card::after{position:absolute;right:-26px;bottom:-38px;width:96px;height:96px;border:1px solid rgba(199,255,69,.1);border-radius:50%;content:""}.stat-label{font-size:10px}.stat-value{margin-top:11px;font-size:31px}.stat-sub{position:relative;z-index:1;margin-top:10px}
+    .section-title{margin:30px 2px 13px}.section-title h2{font-size:15px;font-weight:750}.record-card{padding:16px 2px}.record-card strong{font-size:13px;line-height:1.5}.record-meta{margin-top:5px;line-height:1.55}.record-card .progress{margin-top:10px!important}.record-card .btn{min-width:66px}.subject-row{padding:16px 1px}.subject-head strong{font-size:13px}.subject-head span{padding:2px 7px;border-radius:99px;background:var(--panel2)}
+    .empty{display:grid;place-items:center;min-height:160px;padding:30px 15px;border:1px dashed rgba(196,214,179,.15);border-radius:13px;background:linear-gradient(135deg,rgba(199,255,69,.035),transparent 50%)}.empty::before{display:grid;place-items:center;width:36px;height:36px;margin-bottom:8px;border:1px solid rgba(199,255,69,.18);border-radius:50%;color:var(--accent);font-size:16px;content:"✓"}.empty strong{font-size:15px}.chart{padding-top:23px}.bar{box-shadow:0 0 12px rgba(199,255,69,.13)}
+    .table-wrap{background:var(--bg)}.table th{background:rgba(35,40,30,.82)}.input,.select,.textarea{background:rgba(8,10,7,.6)}.btn.secondary{background:rgba(255,255,255,.02)}
+    .sidebar.collapsed+.main{margin-left:76px}@media(max-width:1000px){.sidebar{width:214px}.main{margin-left:214px;padding:25px}.sidebar.collapsed+.main{margin-left:76px}}@media(max-width:700px){.sidebar,.sidebar.collapsed{width:232px}.main,.sidebar.collapsed+.main{margin-left:0;padding:22px 15px 74px}.topbar{margin-bottom:24px}.stats{gap:12px}.stats .card{min-height:112px;padding:16px}.stat-value{font-size:27px}.record-card{gap:10px}}@media(max-width:440px){.main{padding-inline:12px}.topbar h1{font-size:25px}.stats .card{min-height:0}.record-actions .btn{width:100%}}
+  </style>
+</head>
+<body>
+  <div id="toastContainer" class="toast-container"></div>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">R</div>
+      <div><strong>RecordFlow</strong><small>Study Manager</small></div>
+    </div>
+    <nav>
+      <button class="nav-item active" data-view="dashboard"><span>⌂</span>Dashboard</button>
+      <button class="nav-item" data-view="recordings"><span>▶</span>Recordings</button>
+      <button class="nav-item" data-view="subjects"><span>▦</span>Subjects</button>
+      <button class="nav-item" data-view="calendar"><span>□</span>Calendar</button>
+      <button class="nav-item" data-view="analytics"><span>◔</span>Analytics</button>
+      <button class="nav-item" data-view="settings"><span>⚙</span>Settings</button>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="storage-status"><i></i><span>Saved locally</span></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn sidebar-toggle" id="sidebarToggle" type="button" aria-label="Collapse navigation" aria-controls="sidebar" aria-expanded="true">☰</button>
+      <div>
+        <h1 id="pageTitle">Dashboard</h1>
+        <p id="pageSubtitle">Your recording progress at a glance.</p>
+      </div>
+      <div class="top-actions">
+        <button class="btn secondary" id="quickAddBtn">＋ Add Recording</button>
+      </div>
+    </header>
+
+    <section id="appView"></section>
+  </main>
+
+  <div class="modal-backdrop hidden" id="modalBackdrop">
+    <div class="modal" id="modal"></div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
