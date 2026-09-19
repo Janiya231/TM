@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#EDF1F6" />
+  <title>Study Board</title>
+
+  <!-- Apply saved / system theme before first paint (no flash) -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("study_theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    })();
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&family=Figtree:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <link
+    rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+  />
+</head>
+<body>
+
+  <!-- ============ SUPABASE LOGIN ============ -->
+  <div id="password-lock" class="lock" role="dialog" aria-modal="true" aria-labelledby="lock-title">
+    <form id="password-form" class="lock-box" autocomplete="on">
+      <span class="brand-mark lock-mark"><i class="fa-solid fa-book-open-reader"></i></span>
+      <h2 id="lock-title">Study Board</h2>
+      <p id="lock-help" class="lock-help">Sign in to sync your tasks across your devices.</p>
+      <input type="email" id="email-input" class="input" placeholder="Email" autocomplete="email" aria-label="Email" required />
+      <input type="password" id="password-input" class="input" placeholder="Password" autocomplete="current-password" aria-label="Password" required />
+      <button type="submit" id="password-btn" class="btn btn-primary btn-block">
+        <i class="fa-solid fa-right-to-bracket"></i> Sign in
+      </button>
+      <button type="button" id="signup-btn" class="btn btn-secondary btn-block">
+        <i class="fa-solid fa-user-plus"></i> Create account
+      </button>
+      <p id="password-error" class="lock-error" role="alert"></p>
+    </form>
+  </div>
+
+  <div class="shell">
+
+    <!-- ============ SIDEBAR (tablet / desktop) ============ -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark"><i class="fa-solid fa-book-open-reader"></i></span>
+        <span class="brand-text">
+          <span class="brand-name">Study Board</span>
+          <span class="brand-sub">Weekly plan to Aug 2028</span>
+        </span>
+      </div>
+
+      <nav class="nav" aria-label="Main">
+        <button type="button" class="nav-item is-active" data-go="home" title="Home">
+          <i class="fa-solid fa-house"></i><span class="nav-text">Home</span>
+          <span class="nav-badge js-overdue hidden"></span>
+        </button>
+        <button type="button" class="nav-item" data-go="week" title="This week">
+          <i class="fa-regular fa-calendar"></i><span class="nav-text">This week</span>
+        </button>
+        <button type="button" class="nav-item" data-go="tasks" title="Tasks">
+          <i class="fa-solid fa-list-check"></i><span class="nav-text">Tasks</span>
+        </button>
+
+        <div class="nav-divider"></div>
+
+
+      </nav>
+
+      <div class="nav-spacer"></div>
+
+      <div class="nav-tools">
+        <button type="button" class="nav-item" data-cmd="export" title="Download all tasks as a JSON backup">
+          <i class="fa-solid fa-download"></i><span class="nav-text">Export backup</span>
+        </button>
+        <button type="button" class="nav-item" data-cmd="import" title="Restore tasks from a JSON backup">
+          <i class="fa-solid fa-upload"></i><span class="nav-text">Import backup</span>
+        </button>
+        <button type="button" class="nav-item" data-cmd="sync" title="Keep a JSON file on your device updated automatically">
+          <i class="fa-solid fa-rotate"></i><span class="nav-text">Sync to file</span>
+        </button>
+        <button type="button" class="nav-item" data-cmd="theme" title="Switch theme">
+          <i class="fa-solid fa-circle-half-stroke"></i><span class="nav-text js-theme-label">Dark theme</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ============ MAIN ============ -->
+    <main class="main" id="main">
+      <div class="main-inner">
+
+        <!-- HOME -->
+        <section class="view is-active" id="view-home" data-view="home" aria-labelledby="home-date">
+          <header class="view-head">
+            <div class="view-head-text">
+              <h1 class="view-title" id="home-date"></h1>
+              <p class="lede" id="home-summary"></p>
+              <div class="day-progress">
+                <div class="bar bar-day"><span id="day-progress-fill"></span></div>
+                <span class="day-progress-text" id="day-progress-text">0 of 0 done today</span>
+              </div>
+            </div>
+            <button type="button" class="btn btn-primary hide-mobile" data-cmd="add">
+              <i class="fa-solid fa-plus"></i> Add task
+            </button>
+          </header>
+
+          <div class="home-grid">
+            <section class="notebook" aria-label="Today's tasks">
+              <div class="notebook-head">
+                <h2>Today</h2>
+                <span class="notebook-count" id="today-count"></span>
+              </div>
+              <div class="notebook-body" id="today-list"></div>
+            </section>
+
+            <div class="home-side">
+              <section class="panel" aria-labelledby="progress-title">
+                <h2 class="panel-title" id="progress-title">Progress</h2>
+                <dl class="stat-row">
+                  <div class="stat"><dt>Total</dt><dd id="stat-total">0</dd></div>
+                  <div class="stat"><dt>Done</dt><dd id="stat-completed" class="is-ok">0</dd></div>
+                  <div class="stat"><dt>Pending</dt><dd id="stat-pending">0</dd></div>
+                  <div class="stat"><dt>Overdue</dt><dd id="stat-overdue" class="is-late">0</dd></div>
+                </dl>
+                <div class="progress-line">
+                  <span>All tasks</span>
+                  <strong id="all-progress-text">0%</strong>
+                </div>
+                <div class="bar"><span id="all-progress-fill"></span></div>
+              </section>
+
+              <section class="panel" aria-labelledby="strip-title">
+                <h2 class="panel-title" id="strip-title">Next 7 days</h2>
+                <div class="week-strip" id="weekly-days-grid"></div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <!-- WEEK -->
+        <section class="view" id="view-week" data-view="week" aria-labelledby="week-title">
+          <header class="view-head">
+            <div class="view-head-text">
+              <h1 class="view-title" id="week-title">This week</h1>
+              <p class="lede">Open tasks for the next seven days.</p>
+            </div>
+            <button type="button" class="btn btn-primary hide-mobile" data-cmd="add">
+              <i class="fa-solid fa-plus"></i> Add task
+            </button>
+          </header>
+          <div class="week-board" id="week-board"></div>
+        </section>
+
+        <!-- TASKS -->
+        <section class="view" id="view-tasks" data-view="tasks" aria-labelledby="tasks-title">
+          <header class="view-head">
+            <div class="view-head-text">
+              <h1 class="view-title" id="tasks-title">Tasks</h1>
+              <p class="lede" id="task-count"></p>
+            </div>
+            <button type="button" class="btn btn-primary hide-mobile" data-cmd="add">
+              <i class="fa-solid fa-plus"></i> Add task
+            </button>
+          </header>
+
+          <div class="toolbar">
+            <div class="search">
+              <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+              <input type="search" id="search-input" class="input" placeholder="Search tasks" aria-label="Search tasks" />
+            </div>
+
+            <div class="segmented" role="tablist" aria-label="Task view">
+              <button type="button" class="seg-btn tab-btn active" data-tab="all">All</button>
+              <button type="button" class="seg-btn tab-btn" data-tab="today">Today</button>
+              <button type="button" class="seg-btn tab-btn" data-tab="week">This week</button>
+              <button type="button" class="seg-btn tab-btn" data-tab="pending">Pending</button>
+              <button type="button" class="seg-btn tab-btn" data-tab="completed">Completed</button>
+            </div>
+
+            <div class="filters">
+              <label class="field">
+                <span>Subject</span>
+                <select id="subject-filter" class="input">
+                  <option value="all">All subjects</option>
+                  <option value="Mathematics">Mathematics</option>
+                  <option value="Chemistry">Chemistry</option>
+                  <option value="Physics">Physics</option>
+                  <option value="Other">Other</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Priority</span>
+                <select id="priority-filter" class="input">
+                  <option value="all">All priorities</option>
+                  <option value="High">High</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Low">Low</option>
+                </select>
+              </label>
+              <label class="field field-wide">
+                <span>Sort by</span>
+                <select id="sort-select" class="input">
+                  <option value="dueDate-asc">Due date, earliest first</option>
+                  <option value="dueDate-desc">Due date, latest first</option>
+                  <option value="priority-desc">Priority, high to low</option>
+                  <option value="title-asc">Title, A to Z</option>
+                </select>
+              </label>
+            </div>
+
+            <div id="day-filter-note" class="filter-note hidden">
+              <i class="fa-solid fa-filter"></i>
+              <span id="day-filter-text"></span>
+              <button type="button" class="link-btn" data-cmd="clear-day">Show all days</button>
+            </div>
+          </div>
+
+          <section class="tasks-section list-card" aria-label="Task list">
+            <div id="task-list"></div>
+
+            <div id="empty-state" class="empty-state hidden">
+              <i class="fa-solid fa-folder-open empty-icon"></i>
+              <h2>No tasks match</h2>
+              <p>Clear the filters or add a new task.</p>
+              <button type="button" class="btn btn-secondary" data-cmd="clear-filters">Clear filters</button>
+            </div>
+          </section>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+  <!-- ============ BOTTOM NAV (mobile) ============ -->
+  <nav class="bottom-nav" aria-label="Main">
+    <button type="button" class="bn-item is-active" data-go="home">
+      <i class="fa-solid fa-house"></i><span>Home</span>
+      <span class="bn-badge js-overdue hidden"></span>
+    </button>
+    <button type="button" class="bn-item" data-go="week">
+      <i class="fa-regular fa-calendar"></i><span>Week</span>
+    </button>
+    <button type="button" class="bn-add" data-cmd="add" aria-label="Add task">
+      <i class="fa-solid fa-plus"></i>
+    </button>
+    <button type="button" class="bn-item" data-go="tasks">
+      <i class="fa-solid fa-list-check"></i><span>Tasks</span>
+    </button>
+    <button type="button" class="bn-item" data-cmd="more" aria-haspopup="dialog">
+      <i class="fa-solid fa-ellipsis"></i><span>More</span>
+    </button>
+  </nav>
+
+  <input type="file" id="import-file-input" accept=".json,application/json" hidden />
+
+  <!-- ============ MORE SHEET ============ -->
+  <div id="more-sheet" class="modal-overlay hidden">
+    <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="more-title">
+      <div class="modal-header">
+        <h2 id="more-title">More</h2>
+        <button type="button" class="icon-btn" data-close="more-sheet" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="sheet-list">
+        <a class="sheet-item" href="recording-management-system/index.html" target="_blank" rel="noopener">
+          <span class="sheet-icon"><i class="fa-solid fa-circle-play"></i></span>
+          <span class="sheet-text"><strong>Recordings</strong><span>Open the recording overview</span></span>
+        </a>
+        <a class="sheet-item" href="Mark%20Analysis/dashboard.html" target="_blank" rel="noopener">
+          <span class="sheet-icon"><i class="fa-solid fa-chart-line"></i></span>
+          <span class="sheet-text"><strong>Mark analysis</strong><span>Open the marks dashboard</span></span>
+        </a>
+        <button type="button" class="sheet-item" data-cmd="export">
+          <span class="sheet-icon"><i class="fa-solid fa-download"></i></span>
+          <span class="sheet-text"><strong>Export backup</strong><span>Download all tasks as JSON</span></span>
+        </button>
+        <button type="button" class="sheet-item" data-cmd="import">
+          <span class="sheet-icon"><i class="fa-solid fa-upload"></i></span>
+          <span class="sheet-text"><strong>Import backup</strong><span>Restore tasks from a JSON file</span></span>
+        </button>
+        <button type="button" class="sheet-item" data-cmd="sync">
+          <span class="sheet-icon"><i class="fa-solid fa-rotate"></i></span>
+          <span class="sheet-text"><strong>Sync to file</strong><span>Keep a JSON file updated on this device</span></span>
+        </button>
+        <button type="button" class="sheet-item" data-cmd="theme">
+          <span class="sheet-icon"><i class="fa-solid fa-circle-half-stroke"></i></span>
+          <span class="sheet-text"><strong class="js-theme-label">Dark theme</strong><span>Switch between light and dark</span></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ ADD / EDIT TASK ============ -->
+  <div id="task-modal" class="modal-overlay hidden">
+    <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <h2 id="modal-title">Add task</h2>
+        <button type="button" id="modal-close-btn" class="icon-btn" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <form id="task-form">
+        <input type="hidden" id="task-id" />
+
+        <div class="form-group">
+          <label for="form-title">Title <span class="required">*</span></label>
+          <input type="text" id="form-title" class="input" placeholder="e.g. Organic chemistry, chapter 3 review" required />
+        </div>
+
+        <div class="form-group">
+          <label for="form-subject">Subject <span class="required">*</span></label>
+          <select id="form-subject" class="input" required>
+            <option value="Mathematics">Mathematics</option>
+            <option value="Chemistry">Chemistry</option>
+            <option value="Physics">Physics</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="form-date">Due date <span class="required">*</span></label>
+            <input type="date" id="form-date" class="input" required />
+          </div>
+          <div class="form-group">
+            <label for="form-priority">Priority</label>
+            <select id="form-priority" class="input">
+              <option value="High">High</option>
+              <option value="Medium" selected>Medium</option>
+              <option value="Low">Low</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="form-notes">Notes</label>
+          <textarea id="form-notes" class="input" rows="3" placeholder="Links, sub-topics, page numbers"></textarea>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" id="modal-cancel-btn" class="btn btn-secondary">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save task</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ TASK DETAILS ============ -->
+  <div id="details-modal" class="modal-overlay hidden">
+    <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="detail-heading">
+      <div class="modal-header">
+        <h2 id="detail-heading">Task details</h2>
+        <button type="button" id="details-close-btn" class="icon-btn" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="details-body">
+        <div class="details-row block">
+          <span class="details-label">Title</span>
+          <span id="detail-title" class="details-title"></span>
+        </div>
+        <div class="details-row"><span class="details-label">Subject</span><span id="detail-subject"></span></div>
+        <div class="details-row"><span class="details-label">Due date</span><span id="detail-date"></span></div>
+        <div class="details-row"><span class="details-label">Priority</span><span id="detail-priority"></span></div>
+        <div class="details-row"><span class="details-label">Status</span><span id="detail-status"></span></div>
+        <div class="details-row block">
+          <span class="details-label">Notes</span>
+          <div id="detail-notes" class="details-notes-box"></div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="details-ok-btn" class="btn btn-secondary">Close</button>
+        <button type="button" id="details-edit-btn" class="btn btn-primary"><i class="fa-solid fa-pen"></i> Edit task</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ DELETE CONFIRM ============ -->
+  <div id="delete-modal" class="modal-overlay hidden">
+    <div class="modal-container modal-small" role="alertdialog" aria-modal="true" aria-labelledby="delete-heading">
+      <div class="modal-header">
+        <h2 id="delete-heading">Delete task?</h2>
+        <button type="button" id="delete-close-btn" class="icon-btn" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <p class="modal-text">This removes the task from your board. It can't be undone.</p>
+      <div class="modal-actions">
+        <button type="button" id="delete-cancel-btn" class="btn btn-secondary">Keep task</button>
+        <button type="button" id="delete-confirm-btn" class="btn btn-danger">Delete task</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ IMPORT OPTIONS ============ -->
+  <div id="import-modal" class="modal-overlay hidden">
+    <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="import-heading">
+      <div class="modal-header">
+        <h2 id="import-heading">Import tasks</h2>
+        <button type="button" id="import-close-btn" class="icon-btn" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div id="import-summary" class="import-summary"></div>
+
+      <div class="import-choices">
+        <button type="button" id="import-merge-btn" class="import-choice">
+          <span class="import-choice-title"><i class="fa-solid fa-code-merge"></i> Merge</span>
+          <span class="import-choice-desc">Keep current tasks and add the imported ones. Tasks that already exist are updated, not duplicated.</span>
+        </button>
+        <button type="button" id="import-replace-btn" class="import-choice danger">
+          <span class="import-choice-title"><i class="fa-solid fa-rotate"></i> Replace</span>
+          <span class="import-choice-desc">Delete all current tasks and use only the imported ones. This can't be undone.</span>
+        </button>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" id="import-cancel-btn" class="btn btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
