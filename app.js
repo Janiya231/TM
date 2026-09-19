@@ -4,7 +4,7 @@
 
 const SUPABASE_URL = "https://jtkssszetwndxkftchua.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_wVtjYyCvyc2CrT-G-WcDwQ_dTwhoFMi";
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 const $ = (id) => document.getElementById(id);
 
@@ -43,7 +43,7 @@ async function signIn(e) {
   if (!email || !password) return;
   passwordError.textContent = "";
   setAuthBusy(true);
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
   if (error) {
     passwordError.textContent = error.message;
     setAuthBusy(false);
@@ -63,7 +63,7 @@ async function signUp() {
   }
   passwordError.textContent = "";
   setAuthBusy(true);
-  const { data, error } = await supabase.auth.signUp({ email, password });
+  const { data, error } = await supabaseClient.auth.signUp({ email, password });
   if (error) {
     passwordError.textContent = error.message;
     setAuthBusy(false);
@@ -94,12 +94,12 @@ async function initializeAuthenticatedApp(session) {
 }
 
 async function handleSignOut() {
-  if (realtimeChannel) await supabase.removeChannel(realtimeChannel);
+  if (realtimeChannel) await supabaseClient.removeChannel(realtimeChannel);
   realtimeChannel = null;
   currentUser = null;
   authReady = false;
   tasks = [];
-  await supabase.auth.signOut();
+  await supabaseClient.auth.signOut();
   lockHelp.textContent = "Sign in to sync your tasks across your devices.";
   emailInput.value = "";
   passwordInput.value = "";
@@ -245,7 +245,7 @@ function rowToTask(row) {
 
 async function loadTasksFromCloud() {
   if (!currentUser) return;
-  const { data, error } = await supabase.from("tasks").select("*").eq("user_id", currentUser.id).order("due_date", { ascending: true });
+  const { data, error } = await supabaseClient.from("tasks").select("*").eq("user_id", currentUser.id).order("due_date", { ascending: true });
   if (error) {
     console.error(error);
     showToast("Couldn't load your cloud tasks.", "error");
@@ -265,16 +265,16 @@ async function saveTasksToCloud() {
   if (saveInProgress) { queuedSave = true; return; }
   saveInProgress = true;
   try {
-    const { data: existing, error: existingError } = await supabase.from("tasks").select("id").eq("user_id", currentUser.id);
+    const { data: existing, error: existingError } = await supabaseClient.from("tasks").select("id").eq("user_id", currentUser.id);
     if (existingError) throw existingError;
     const wantedIds = new Set(tasks.map(t => t.id));
     const staleIds = (existing || []).map(r => r.id).filter(id => !wantedIds.has(id));
     if (staleIds.length) {
-      const { error } = await supabase.from("tasks").delete().eq("user_id", currentUser.id).in("id", staleIds);
+      const { error } = await supabaseClient.from("tasks").delete().eq("user_id", currentUser.id).in("id", staleIds);
       if (error) throw error;
     }
     if (tasks.length) {
-      const { error } = await supabase.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" });
+      const { error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" });
       if (error) throw error;
     }
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch (err) {}
@@ -297,8 +297,8 @@ function loadTasks() {
 
 function setupRealtimeSync() {
   if (!currentUser) return;
-  if (realtimeChannel) supabase.removeChannel(realtimeChannel);
-  realtimeChannel = supabase.channel(`tasks-sync-${currentUser.id}`)
+  if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
+  realtimeChannel = supabaseClient.channel(`tasks-sync-${currentUser.id}`)
     .on("postgres_changes", { event: "*", schema: "public", table: "tasks", filter: `user_id=eq.${currentUser.id}` }, async () => {
       if (saveInProgress) return;
       await loadTasksFromCloud();
@@ -1181,13 +1181,13 @@ tasks = [];
 renderApp();
 
 (async function startApp() {
-  const { data: { session } } = await supabase.auth.getSession();
+  const { data: { session } } = await supabaseClient.auth.getSession();
   if (session) {
     await initializeAuthenticatedApp(session);
   } else {
     showLogin();
   }
-  supabase.auth.onAuthStateChange(async (_event, session) => {
+  supabaseClient.auth.onAuthStateChange(async (_event, session) => {
     if (session && !currentUser) await initializeAuthenticatedApp(session);
     else if (!session && currentUser) handleSignOut();
   });
