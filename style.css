@@ -505,7 +505,7 @@ select.input {
 }
 .progress-line strong { color: var(--ink); }
 
-.week-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+.week-strip { display: grid; grid-template-columns: repeat(7, 1fr); grid-auto-flow: row; gap: 6px; }
 .day-chip {
   display: flex;
   flex-direction: column;

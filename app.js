@@ -1001,7 +1001,7 @@ function renderWeekStrip() {
   const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   let html = "";
 
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 14; i++) {
     const d = new Date();
     d.setDate(d.getDate() + i);
     const key = toDateKey(d);
