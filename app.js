@@ -333,6 +333,8 @@ const taskModal = $("task-modal");
 const taskForm = $("task-form");
 const modalTitle = $("modal-title");
 const taskIdInput = $("task-id");
+const repeatTaskModal = $("repeat-task-modal");
+const repeatTaskForm = $("repeat-task-form");
 const detailsModal = $("details-modal");
 const deleteModal = $("delete-modal");
 const importModal = $("import-modal");
@@ -420,7 +422,7 @@ function hideOverlay(el) {
 
 function closeAllModals() {
   if (!document.querySelector(".modal-overlay:not(.hidden)")) return;
-  [taskModal, detailsModal, deleteModal, importModal, moreSheet].forEach((el) => hideOverlay(el));
+  [taskModal, repeatTaskModal, detailsModal, deleteModal, importModal, moreSheet].forEach((el) => hideOverlay(el));
   pendingDeleteId = null;
   pendingImport = null;
   importFileInput.value = "";
@@ -458,6 +460,11 @@ function setupEventListeners() {
   $("modal-close-btn").addEventListener("click", closeTaskModal);
   $("modal-cancel-btn").addEventListener("click", closeTaskModal);
   taskForm.addEventListener("submit", handleFormSubmit);
+
+  // Repeating task modal
+  $("repeat-modal-close-btn").addEventListener("click", closeRepeatTaskModal);
+  $("repeat-modal-cancel-btn").addEventListener("click", closeRepeatTaskModal);
+  repeatTaskForm.addEventListener("submit", handleRepeatFormSubmit);
 
   // Details modal
   $("details-close-btn").addEventListener("click", () => hideOverlay(detailsModal));
@@ -548,6 +555,7 @@ function setupEventListeners() {
 function runCommand(name) {
   switch (name) {
     case "add": openTaskModal(); break;
+    case "add-repeating": openRepeatTaskModal(); break;
     case "more": showOverlay(moreSheet); break;
     case "export": exportTasks(); break;
     case "import": importFileInput.click(); break;
@@ -685,6 +693,42 @@ function handleFormSubmit(e) {
   showToast(id ? "Task saved." : "Task added.", "success");
 }
 
+function handleRepeatFormSubmit(e) {
+  e.preventDefault();
+
+  const title = $("repeat-form-title").value.trim();
+  const subject = $("repeat-form-subject").value;
+  const dayOfWeek = Number($("repeat-form-day").value);
+  const priority = $("repeat-form-priority").value;
+  const endDate = $("repeat-form-end-date").value || END_SCHEDULE_DATE;
+  const notesInput = $("repeat-form-notes").value.trim();
+
+  if (!title) return;
+
+  const dueDate = getNextDateForDay(dayOfWeek);
+  if (dueDate > endDate) {
+    showToast("The end date is before the next occurrence of that day.", "error");
+    return;
+  }
+
+  tasks.push({
+    id: `repeat-${Date.now()}`,
+    title,
+    subject,
+    dueDate,
+    priority,
+    completed: false,
+    recurring: true,
+    dayOfWeek,
+    endDate,
+    notes: notesInput || `Recurring task (Every ${getDayName(dayOfWeek)}) until ${endDate}`
+  });
+
+  closeRepeatTaskModal();
+  commit();
+  showToast("Repeating task added.", "success");
+}
+
 function confirmDeleteTask() {
   if (!pendingDeleteId) return;
   tasks = tasks.filter((t) => t.id !== pendingDeleteId);
@@ -720,6 +764,17 @@ function openTaskModal(id = null, presetDate = null) {
 
 function closeTaskModal() {
   hideOverlay(taskModal);
+}
+
+function openRepeatTaskModal() {
+  repeatTaskForm.reset();
+  $("repeat-form-priority").value = "Medium";
+  $("repeat-form-end-date").value = END_SCHEDULE_DATE;
+  showOverlay(repeatTaskModal, "#repeat-form-title");
+}
+
+function closeRepeatTaskModal() {
+  hideOverlay(repeatTaskModal);
 }
 
 function viewTaskDetails(id) {
