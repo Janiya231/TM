@@ -196,6 +196,72 @@ function getDayName(dayIndex) {
   return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][dayIndex];
 }
 
+// ---- Repeat patterns -------------------------------------------------
+// A recurring task repeats on a set of weekdays (0 = Sunday ... 6 = Saturday).
+// Older tasks only have `dayOfWeek`, which counts as a set of one day.
+const REPEAT_PRESETS = {
+  daily: [0, 1, 2, 3, 4, 5, 6],
+  weekdays: [1, 2, 3, 4, 5],
+  weekends: [6, 0]
+};
+const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function repeatDaysOf(task) {
+  if (Array.isArray(task.repeatDays) && task.repeatDays.length) return task.repeatDays;
+  return Number.isInteger(task.dayOfWeek) ? [task.dayOfWeek] : [];
+}
+
+function sameDaySet(a, b) {
+  return a.length === b.length && a.every((d) => b.includes(d));
+}
+
+function describeRepeat(days) {
+  if (sameDaySet(days, REPEAT_PRESETS.daily)) return "Every day";
+  if (sameDaySet(days, REPEAT_PRESETS.weekdays)) return "Every week day";
+  if (sameDaySet(days, REPEAT_PRESETS.weekends)) return "Every weekend day";
+  if (days.length === 1) return `Every ${getDayName(days[0])}`;
+  const order = [1, 2, 3, 4, 5, 6, 0].filter((d) => days.includes(d));
+  return `Every ${order.map((d) => DAY_SHORT[d]).join(", ")}`;
+}
+
+// First date on or after `fromDate` that falls on one of `days`
+function getNextDateInSet(days, fromDate = new Date()) {
+  const d = new Date(fromDate);
+  for (let i = 0; i < 7; i++) {
+    if (days.includes(d.getDay())) return toDateKey(d);
+    d.setDate(d.getDate() + 1);
+  }
+  return toDateKey(fromDate);
+}
+
+// The occurrence after `dateKey` (always at least one day later)
+function getFollowingDate(days, dateKey) {
+  const d = parseDateKey(dateKey);
+  for (let i = 0; i < 7; i++) {
+    d.setDate(d.getDate() + 1);
+    if (days.includes(d.getDay())) return toDateKey(d);
+  }
+  return toDateKey(d);
+}
+
+// The cloud table only has a single integer `day_of_week` column. Single-day
+// tasks keep their plain 0-6 value; multi-day patterns are stored as 100 + a
+// bitmask of the days, so no database change is needed.
+function encodeRepeatDays(task) {
+  const days = repeatDaysOf(task);
+  if (days.length <= 1) return Number.isInteger(task.dayOfWeek) ? task.dayOfWeek : null;
+  return 100 + days.reduce((mask, d) => mask | (1 << d), 0);
+}
+
+function decodeRepeatDays(value) {
+  if (!Number.isInteger(value)) return { dayOfWeek: null, repeatDays: undefined };
+  if (value < 100) return { dayOfWeek: value, repeatDays: undefined };
+  const mask = value - 100;
+  const days = [0, 1, 2, 3, 4, 5, 6].filter((d) => mask & (1 << d));
+  const first = [1, 2, 3, 4, 5, 6, 0].find((d) => days.includes(d));
+  return { dayOfWeek: first ?? null, repeatDays: days };
+}
+
 function generateInitialTasks() {
   const list = [];
   const today = new Date();
@@ -231,16 +297,19 @@ function taskToRow(task) {
   return {
     id: task.id, user_id: currentUser.id, title: task.title || "", subject: task.subject || "Other",
     due_date: task.dueDate, priority: task.priority || "Medium", completed: !!task.completed,
-    recurring: !!task.recurring, day_of_week: Number.isInteger(task.dayOfWeek) ? task.dayOfWeek : null,
+    recurring: !!task.recurring, day_of_week: encodeRepeatDays(task),
     end_date: task.endDate || null, last_done: task.lastDone || null, notes: task.notes || "",
     updated_at: new Date().toISOString()
   };
 }
 
 function rowToTask(row) {
-  return { id: row.id, title: row.title, subject: row.subject, dueDate: row.due_date, priority: row.priority,
-    completed: row.completed, recurring: row.recurring, dayOfWeek: row.day_of_week, endDate: row.end_date,
+  const { dayOfWeek, repeatDays } = decodeRepeatDays(row.day_of_week);
+  const task = { id: row.id, title: row.title, subject: row.subject, dueDate: row.due_date, priority: row.priority,
+    completed: row.completed, recurring: row.recurring, dayOfWeek, endDate: row.end_date,
     lastDone: row.last_done, notes: row.notes || "" };
+  if (repeatDays) task.repeatDays = repeatDays;
+  return task;
 }
 
 async function loadTasksFromCloud() {
@@ -465,6 +534,7 @@ function setupEventListeners() {
   $("repeat-modal-close-btn").addEventListener("click", closeRepeatTaskModal);
   $("repeat-modal-cancel-btn").addEventListener("click", closeRepeatTaskModal);
   repeatTaskForm.addEventListener("submit", handleRepeatFormSubmit);
+  $("repeat-form-pattern").addEventListener("change", updateRepeatPatternUI);
 
   // Details modal
   $("details-close-btn").addEventListener("click", () => hideOverlay(detailsModal));
@@ -639,10 +709,9 @@ function toggleTaskComplete(id) {
   if (!task) return;
 
   if (task.recurring && !task.completed) {
-    // Completing a recurring task moves it to the same weekday next week
-    const next = parseDateKey(task.dueDate);
-    next.setDate(next.getDate() + 7);
-    const nextDueDate = toDateKey(next);
+    // Completing a recurring task moves it to its next matching day
+    const days = repeatDaysOf(task);
+    const nextDueDate = getFollowingDate(days, task.dueDate);
     const maxEndDate = task.endDate || END_SCHEDULE_DATE;
 
     task.lastDone = getRelativeDate(0); // lets the "today" progress bar count it
@@ -650,7 +719,7 @@ function toggleTaskComplete(id) {
     if (nextDueDate <= maxEndDate) {
       task.dueDate = nextDueDate;
       task.completed = false;
-      showToast(`Done. Next one is ${getDayName(task.dayOfWeek)}, ${formatDateReadable(nextDueDate)}.`, "success");
+      showToast(`Done. Next one is ${getDayName(parseDateKey(nextDueDate).getDay())}, ${formatDateReadable(nextDueDate)}.`, "success");
     } else {
       task.completed = true;
       showToast("Final occurrence completed.", "success");
@@ -693,25 +762,45 @@ function handleFormSubmit(e) {
   showToast(id ? "Task saved." : "Task added.", "success");
 }
 
+function getRepeatDaysFromForm() {
+  const pattern = $("repeat-form-pattern").value;
+  if (REPEAT_PRESETS[pattern]) return [...REPEAT_PRESETS[pattern]];
+  if (pattern === "custom") {
+    return Array.from(repeatTaskForm.querySelectorAll('input[name="repeat-day"]:checked')).map((el) => Number(el.value));
+  }
+  return [Number($("repeat-form-day").value)];
+}
+
+function updateRepeatPatternUI() {
+  const pattern = $("repeat-form-pattern").value;
+  $("repeat-weekly-group").classList.toggle("hidden", pattern !== "weekly");
+  $("repeat-custom-group").classList.toggle("hidden", pattern !== "custom");
+}
+
 function handleRepeatFormSubmit(e) {
   e.preventDefault();
 
   const title = $("repeat-form-title").value.trim();
   const subject = $("repeat-form-subject").value;
-  const dayOfWeek = Number($("repeat-form-day").value);
   const priority = $("repeat-form-priority").value;
   const endDate = $("repeat-form-end-date").value || END_SCHEDULE_DATE;
   const notesInput = $("repeat-form-notes").value.trim();
+  const days = getRepeatDaysFromForm();
 
   if (!title) return;
-
-  const dueDate = getNextDateForDay(dayOfWeek);
-  if (dueDate > endDate) {
-    showToast("The end date is before the next occurrence of that day.", "error");
+  if (days.length === 0) {
+    showToast("Pick at least one day for a custom repeat.", "error");
     return;
   }
 
-  tasks.push({
+  const dueDate = getNextDateInSet(days);
+  if (dueDate > endDate) {
+    showToast("The end date is before the first occurrence.", "error");
+    return;
+  }
+
+  const firstDay = [1, 2, 3, 4, 5, 6, 0].find((d) => days.includes(d));
+  const task = {
     id: `repeat-${Date.now()}`,
     title,
     subject,
@@ -719,10 +808,12 @@ function handleRepeatFormSubmit(e) {
     priority,
     completed: false,
     recurring: true,
-    dayOfWeek,
+    dayOfWeek: days.length === 1 ? days[0] : firstDay,
     endDate,
-    notes: notesInput || `Recurring task (Every ${getDayName(dayOfWeek)}) until ${endDate}`
-  });
+    notes: notesInput || `Recurring task (${describeRepeat(days)}) until ${endDate}`
+  };
+  if (days.length > 1) task.repeatDays = days;
+  tasks.push(task);
 
   closeRepeatTaskModal();
   commit();
@@ -768,8 +859,11 @@ function closeTaskModal() {
 
 function openRepeatTaskModal() {
   repeatTaskForm.reset();
+  $("repeat-form-pattern").value = "weekly";
+  $("repeat-form-day").value = String(new Date().getDay());
   $("repeat-form-priority").value = "Medium";
   $("repeat-form-end-date").value = END_SCHEDULE_DATE;
+  updateRepeatPatternUI();
   showOverlay(repeatTaskModal, "#repeat-form-title");
 }
 
@@ -1181,7 +1275,7 @@ function taskHTML(task, { compact = false } = {}) {
         <span class="check-box" aria-hidden="true"></span>
       </label>
       <button type="button" class="task-main" data-action="view" data-id="${id}">
-        <span class="task-title">${title}</span>${task.recurring ? '<i class="fa-solid fa-arrows-rotate task-repeat" aria-hidden="true"></i><span class="sr-only"> Repeats weekly</span>' : ""}
+        <span class="task-title">${title}</span>${task.recurring ? '<i class="fa-solid fa-arrows-rotate task-repeat" aria-hidden="true"></i><span class="sr-only"> ${escapeHtml(describeRepeat(repeatDaysOf(task)))}</span>' : ""}
       </button>
       <div class="task-meta">
         ${subjectChipHTML(task.subject)}

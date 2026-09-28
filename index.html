@@ -377,7 +377,7 @@
         <h2 id="repeat-modal-title"><i class="fa-solid fa-arrows-rotate"></i> Add repeating task</h2>
         <button type="button" id="repeat-modal-close-btn" class="icon-btn" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
       </div>
-      <p class="modal-text">This creates a task that repeats weekly on the day you pick, until it reaches the end date.</p>
+      <p class="modal-text">Choose how often this task comes back. Each time you tick it off, it moves to the next matching day until the end date.</p>
       <form id="repeat-task-form">
         <div class="form-group">
           <label for="repeat-form-title">Title <span class="required">*</span></label>
@@ -396,15 +396,13 @@
 
         <div class="form-row">
           <div class="form-group">
-            <label for="repeat-form-day">Repeats every <span class="required">*</span></label>
-            <select id="repeat-form-day" class="input" required>
-              <option value="1">Monday</option>
-              <option value="2">Tuesday</option>
-              <option value="3">Wednesday</option>
-              <option value="4">Thursday</option>
-              <option value="5">Friday</option>
-              <option value="6">Saturday</option>
-              <option value="0">Sunday</option>
+            <label for="repeat-form-pattern">Repeat <span class="required">*</span></label>
+            <select id="repeat-form-pattern" class="input" required>
+              <option value="daily">Daily</option>
+              <option value="weekdays">Week days (Mon to Fri)</option>
+              <option value="weekends">Weekend days (Sat, Sun)</option>
+              <option value="weekly" selected>Weekly</option>
+              <option value="custom">Custom</option>
             </select>
           </div>
           <div class="form-group">
@@ -414,6 +412,32 @@
               <option value="Medium" selected>Medium</option>
               <option value="Low">Low</option>
             </select>
+          </div>
+        </div>
+
+        <div class="form-group" id="repeat-weekly-group">
+          <label for="repeat-form-day">Day of the week</label>
+          <select id="repeat-form-day" class="input">
+            <option value="1">Monday</option>
+            <option value="2">Tuesday</option>
+            <option value="3">Wednesday</option>
+            <option value="4">Thursday</option>
+            <option value="5">Friday</option>
+            <option value="6">Saturday</option>
+            <option value="0">Sunday</option>
+          </select>
+        </div>
+
+        <div class="form-group hidden" id="repeat-custom-group">
+          <span class="group-label" id="repeat-custom-label">Repeat on</span>
+          <div class="day-picker" role="group" aria-labelledby="repeat-custom-label">
+            <label class="day-toggle"><input type="checkbox" name="repeat-day" value="1" /><span>Mon</span></label>
+            <label class="day-toggle"><input type="checkbox" name="repeat-day" value="2" /><span>Tue</span></label>
+            <label class="day-toggle"><input type="checkbox" name="repeat-day" value="3" /><span>Wed</span></label>
+            <label class="day-toggle"><input type="checkbox" name="repeat-day" value="4" /><span>Thu</span></label>
+            <label class="day-toggle"><input type="checkbox" name="repeat-day" value="5" /><span>Fri</span></label>
+            <label class="day-toggle"><input type="checkbox" name="repeat-day" value="6" /><span>Sat</span></label>
+            <label class="day-toggle"><input type="checkbox" name="repeat-day" value="0" /><span>Sun</span></label>
           </div>
         </div>
 
