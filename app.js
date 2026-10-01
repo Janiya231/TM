@@ -22,6 +22,7 @@ let authReady = false;
 let realtimeChannel = null;
 let saveInProgress = false;
 let queuedSave = false;
+let tasks = [];
 
 function showLogin(message = "") {
   passwordLock.classList.remove("unlocked");
@@ -262,6 +263,97 @@ function decodeRepeatDays(value) {
   return { dayOfWeek: first ?? null, repeatDays: days };
 }
 
+/* ==================================================
+   WEEKLY PLANNER - DATA MODEL
+   Every task keeps three extra fields:
+     durationMinutes  how long it takes (default 30)
+     scheduledDate    "YYYY-MM-DD" it is planned for, or null
+     startTime        "HH:MM" (24h) it starts at, or null
+   dueDate stays the deadline; scheduledDate is when you plan to do it.
+================================================== */
+
+const PLANNER_DAY_START = 5 * 60;   // 5:00 AM, in minutes from midnight
+const PLANNER_DAY_END = 23 * 60;    // 11:00 PM
+const PLANNER_STEP = 30;            // grid and snap size in minutes
+const PLANNER_SLOTS = (PLANNER_DAY_END - PLANNER_DAY_START) / PLANNER_STEP; // 36
+const DEFAULT_DURATION = 30;
+const DURATION_PRESETS = [15, 30, 45, 60, 90, 120, 150, 180];
+const PLANNER_LOCAL_KEY = "study_planner_v1";
+
+// The cloud table needs duration_minutes, scheduled_date and start_time columns.
+// Until they exist we fall back to keeping planner data on this device.
+let plannerColumnsOk = true;
+let plannerLocalCache = null;
+
+function timeToMinutes(value) {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(value ?? ""));
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+function minutesToTime(total) {
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+function formatClock(total) {
+  const h24 = Math.floor(total / 60);
+  const m = total % 60;
+  const h12 = h24 % 12 || 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${h24 < 12 ? "AM" : "PM"}`;
+}
+
+// Safe defaults for tasks created before the planner existed
+function ensurePlannerFields(task) {
+  const dur = Math.round(Number(task.durationMinutes));
+  task.durationMinutes = dur >= 5 && dur <= 480 ? dur : DEFAULT_DURATION;
+
+  const date = typeof task.scheduledDate === "string" ? task.scheduledDate.slice(0, 10) : "";
+  const start = timeToMinutes(task.startTime);
+  const fits = /^\d{4}-\d{2}-\d{2}$/.test(date) &&
+    start !== null &&
+    start >= PLANNER_DAY_START &&
+    start + task.durationMinutes <= PLANNER_DAY_END;
+
+  task.scheduledDate = fits ? date : null;
+  task.startTime = fits ? minutesToTime(start) : null;
+  return task;
+}
+
+function isScheduled(task) {
+  return Boolean(task.scheduledDate && task.startTime);
+}
+
+function shiftDateKey(key, days) {
+  const d = parseDateKey(key);
+  d.setDate(d.getDate() + days);
+  return toDateKey(d);
+}
+
+function readPlannerLocal() {
+  try { return JSON.parse(localStorage.getItem(PLANNER_LOCAL_KEY)) || {}; } catch (err) { return {}; }
+}
+
+function writePlannerLocal() {
+  const map = {};
+  tasks.forEach((t) => {
+    if (t.scheduledDate || t.durationMinutes !== DEFAULT_DURATION) {
+      map[t.id] = { d: t.durationMinutes, s: t.scheduledDate, t: t.startTime };
+    }
+  });
+  try { localStorage.setItem(PLANNER_LOCAL_KEY, JSON.stringify(map)); } catch (err) {}
+}
+
+function isMissingPlannerColumn(error) {
+  const text = `${error && error.message ? error.message : ""}`;
+  return /duration_minutes|scheduled_date|start_time/.test(text) ||
+    (error && (error.code === "PGRST204" || error.code === "42703"));
+}
+
 function generateInitialTasks() {
   const list = [];
   const today = new Date();
@@ -283,7 +375,7 @@ function generateInitialTasks() {
       });
     }
   });
-  return list;
+  return list.map(ensurePlannerFields);
 }
 
 /* ==================================================
@@ -294,13 +386,19 @@ const STORAGE_KEY = "study_tasks_v2";
 const THEME_KEY = "study_theme";
 
 function taskToRow(task) {
-  return {
+  const row = {
     id: task.id, user_id: currentUser.id, title: task.title || "", subject: task.subject || "Other",
     due_date: task.dueDate, priority: task.priority || "Medium", completed: !!task.completed,
     recurring: !!task.recurring, day_of_week: encodeRepeatDays(task),
     end_date: task.endDate || null, last_done: task.lastDone || null, notes: task.notes || "",
     updated_at: new Date().toISOString()
   };
+  if (plannerColumnsOk) {
+    row.duration_minutes = task.durationMinutes ?? DEFAULT_DURATION;
+    row.scheduled_date = task.scheduledDate || null;
+    row.start_time = task.startTime || null;
+  }
+  return row;
 }
 
 function rowToTask(row) {
@@ -309,7 +407,20 @@ function rowToTask(row) {
     completed: row.completed, recurring: row.recurring, dayOfWeek, endDate: row.end_date,
     lastDone: row.last_done, notes: row.notes || "" };
   if (repeatDays) task.repeatDays = repeatDays;
-  return task;
+  if ("duration_minutes" in row || "scheduled_date" in row || "start_time" in row) {
+    task.durationMinutes = row.duration_minutes;
+    task.scheduledDate = row.scheduled_date || null;
+    task.startTime = row.start_time || null;
+  } else {
+    // Cloud table has no planner columns yet: use the copy kept on this device
+    const local = (plannerLocalCache || {})[row.id];
+    if (local) {
+      task.durationMinutes = local.d;
+      task.scheduledDate = local.s || null;
+      task.startTime = local.t || null;
+    }
+  }
+  return ensurePlannerFields(task);
 }
 
 async function loadTasksFromCloud() {
@@ -324,6 +435,8 @@ async function loadTasksFromCloud() {
     tasks = generateInitialTasks();
     await saveTasksToCloud();
   } else {
+    plannerLocalCache = readPlannerLocal();
+    plannerColumnsOk = "duration_minutes" in data[0] && "scheduled_date" in data[0] && "start_time" in data[0];
     tasks = data.map(rowToTask);
   }
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch (err) {}
@@ -343,7 +456,13 @@ async function saveTasksToCloud() {
       if (error) throw error;
     }
     if (tasks.length) {
-      const { error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" });
+      let { error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" });
+      if (error && plannerColumnsOk && isMissingPlannerColumn(error)) {
+        // Cloud table doesn't have the planner columns yet: save everything else, keep planner data on this device
+        plannerColumnsOk = false;
+        showToast("Planner times are saved on this device only until the cloud table gets its new columns.", "error");
+        ({ error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" }));
+      }
       if (error) throw error;
     }
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch (err) {}
@@ -412,7 +531,7 @@ const importSummary = $("import-summary");
 const importFileInput = $("import-file-input");
 const toastContainer = $("toast-container");
 
-const VIEWS = ["home", "week", "tasks"];
+const VIEWS = ["home", "week", "planner", "tasks"];
 
 /* ==================================================
    THEME
@@ -450,6 +569,8 @@ function setView(name) {
     if (active) btn.setAttribute("aria-current", "page");
     else btn.removeAttribute("aria-current");
   });
+
+  if (name === "planner") renderPlanner();
 
   try { history.replaceState(null, "", `#${name}`); } catch (err) { /* file:// */ }
   window.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
@@ -522,7 +643,7 @@ function setupEventListeners() {
 
   // Close the More sheet when a link/command inside it is used
   moreSheet.addEventListener("click", (e) => {
-    if (e.target.closest("a, [data-cmd]")) hideOverlay(moreSheet);
+    if (e.target.closest("a, [data-cmd], [data-go]")) hideOverlay(moreSheet);
   });
 
   // Task modal
@@ -535,6 +656,8 @@ function setupEventListeners() {
   $("repeat-modal-cancel-btn").addEventListener("click", closeRepeatTaskModal);
   repeatTaskForm.addEventListener("submit", handleRepeatFormSubmit);
   $("repeat-form-pattern").addEventListener("change", updateRepeatPatternUI);
+
+  $("form-duration").addEventListener("change", syncDurationUI);
 
   // Details modal
   $("details-close-btn").addEventListener("click", () => hideOverlay(detailsModal));
@@ -598,7 +721,7 @@ function setupEventListeners() {
   main.addEventListener("change", (e) => {
     const box = e.target.closest(".toggle-complete");
     if (!box) return;
-    const item = box.closest(".task");
+    const item = box.closest(".task, .pl-block, .pl-card");
     if (item && box.checked) item.classList.add("is-completing");
     const id = box.dataset.id;
     setTimeout(() => toggleTaskComplete(id), reduceMotion ? 0 : 240);
@@ -633,6 +756,9 @@ function runCommand(name) {
     case "theme": toggleTheme(); break;
     case "clear-filters": clearFilters(); break;
     case "clear-day": activeDayFilter = null; renderApp(); break;
+    case "plan-prev":
+    case "plan-next":
+    case "plan-today": plannerGo(name); break;
   }
 }
 
@@ -650,6 +776,7 @@ function checkDayRollover() {
 
 function saveTasks() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch (err) {}
+  writePlannerLocal();
   if (currentUser) saveTasksToCloud();
   if (syncFileHandle) writeTasksToSyncFile();
 }
@@ -717,6 +844,8 @@ function toggleTaskComplete(id) {
     task.lastDone = getRelativeDate(0); // lets the "today" progress bar count it
 
     if (nextDueDate <= maxEndDate) {
+      // A planned slot moves with the task to its next occurrence
+      if (task.scheduledDate) task.scheduledDate = shiftDateKey(task.scheduledDate, daysBetween(task.dueDate, nextDueDate));
       task.dueDate = nextDueDate;
       task.completed = false;
       showToast(`Done. Next one is ${getDayName(parseDateKey(nextDueDate).getDay())}, ${formatDateReadable(nextDueDate)}.`, "success");
@@ -743,8 +872,32 @@ function handleFormSubmit(e) {
 
   if (!title || !dueDate) return;
 
+  const durationMinutes = readDurationInput();
+  if (durationMinutes === null) {
+    showToast("Enter a duration between 5 and 480 minutes.", "error");
+    return;
+  }
+
+  // Planning is optional: choosing a start time schedules the task
+  const planTime = $("form-plan-time").value;
+  const planDate = $("form-plan-date").value;
+  let scheduledDate = null;
+  let startTime = null;
+  if (planTime) {
+    if (!planDate) {
+      showToast("Pick a date to plan this task on.", "error");
+      return;
+    }
+    if (timeToMinutes(planTime) + durationMinutes > PLANNER_DAY_END) {
+      showToast(`That would run past ${formatClock(PLANNER_DAY_END)}. Shorten it or start earlier.`, "error");
+      return;
+    }
+    scheduledDate = planDate;
+    startTime = planTime;
+  }
+
   if (id) {
-    tasks = tasks.map((t) => (t.id === id ? { ...t, title, subject, dueDate, priority, notes } : t));
+    tasks = tasks.map((t) => (t.id === id ? { ...t, title, subject, dueDate, priority, notes, durationMinutes, scheduledDate, startTime } : t));
   } else {
     tasks.push({
       id: `task-${Date.now()}`,
@@ -753,7 +906,10 @@ function handleFormSubmit(e) {
       dueDate,
       priority,
       completed: false,
-      notes
+      notes,
+      durationMinutes,
+      scheduledDate,
+      startTime
     });
   }
 
@@ -845,12 +1001,38 @@ function openTaskModal(id = null, presetDate = null) {
     $("form-date").value = task.dueDate;
     $("form-priority").value = task.priority;
     $("form-notes").value = task.notes || "";
+    setDurationInputs(task.durationMinutes);
+    $("form-plan-date").value = task.scheduledDate || "";
+    $("form-plan-time").value = task.startTime || "";
   } else {
     modalTitle.textContent = "Add task";
     taskIdInput.value = "";
     $("form-date").value = presetDate || getRelativeDate(0);
+    setDurationInputs(60);
   }
   showOverlay(taskModal, "#form-title");
+}
+
+function syncDurationUI() {
+  $("form-duration-custom-group").classList.toggle("hidden", $("form-duration").value !== "custom");
+}
+
+function setDurationInputs(minutes) {
+  if (DURATION_PRESETS.includes(minutes)) {
+    $("form-duration").value = String(minutes);
+  } else {
+    $("form-duration").value = "custom";
+    $("form-duration-custom").value = minutes;
+  }
+  syncDurationUI();
+}
+
+// Minutes from the form, or null when a custom value is out of range
+function readDurationInput() {
+  const select = $("form-duration").value;
+  if (select !== "custom") return Number(select);
+  const n = Math.round(Number($("form-duration-custom").value));
+  return n >= 5 && n <= 480 ? n : null;
 }
 
 function closeTaskModal() {
@@ -880,6 +1062,10 @@ function viewTaskDetails(id) {
   $("detail-subject").innerHTML = subjectChipHTML(task.subject);
   $("detail-date").textContent = formatDateReadable(task.dueDate);
   $("detail-priority").innerHTML = priorityHTML(task.priority);
+  $("detail-duration").textContent = `${task.durationMinutes} min`;
+  $("detail-planned").textContent = isScheduled(task)
+    ? `${formatDayShort(task.scheduledDate)}, ${formatClock(timeToMinutes(task.startTime))} – ${formatClock(timeToMinutes(task.startTime) + task.durationMinutes)}`
+    : "Not scheduled";
   $("detail-status").textContent = task.completed ? "Completed" : "Pending";
   $("detail-notes").textContent = task.notes || "No notes on this task.";
 
@@ -970,6 +1156,8 @@ function applyImport(mode) {
     tasks = Array.from(byId.values());
   }
 
+  tasks.forEach(ensurePlannerFields);
+
   const count = incoming.length;
   closeImportModal();
   commit();
@@ -989,6 +1177,7 @@ function renderApp() {
   renderWeekBoard();
   renderTasksView();
   renderBadges();
+  if (currentView === "planner") renderPlanner();
 }
 
 function getFilteredTasks() {
@@ -1290,6 +1479,618 @@ function taskHTML(task, { compact = false } = {}) {
 }
 
 /* ==================================================
+   WEEKLY PLANNER - VIEW + DRAG AND DROP
+   Pointer events are used (not HTML5 drag) so the same code
+   works with a mouse, a pen and a finger. On touch, press and
+   hold a card or block for a moment, then drag.
+================================================== */
+
+let plannerWeekStart = mondayKeyOf(new Date());
+let plannerFilter = "all";
+let plannerBusy = false;            // true while dragging / resizing: re-render waits
+let plannerRenderQueued = false;
+let plannerDidInitialScroll = false;
+let plannerSuppressClickUntil = 0;
+let drag = null;
+let resize = null;
+
+function mondayKeyOf(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return toDateKey(d);
+}
+
+function plannerWeekDays() {
+  return Array.from({ length: 7 }, (_, i) => {
+    const key = shiftDateKey(plannerWeekStart, i);
+    return { key, date: parseDateKey(key) };
+  });
+}
+
+function plannerRangeLabel(days) {
+  const a = days[0].date;
+  const b = days[6].date;
+  const fmt = (d, opts) => d.toLocaleDateString("en-US", opts);
+  if (a.getFullYear() !== b.getFullYear()) {
+    const o = { month: "short", day: "numeric", year: "numeric" };
+    return `${fmt(a, o)} – ${fmt(b, o)}`;
+  }
+  if (a.getMonth() === b.getMonth()) {
+    return `${fmt(a, { month: "long" })} ${a.getDate()}–${b.getDate()}, ${a.getFullYear()}`;
+  }
+  const o = { month: "short", day: "numeric" };
+  return `${fmt(a, o)} – ${fmt(b, o)}, ${b.getFullYear()}`;
+}
+
+function plannerGo(command) {
+  if (command === "plan-prev") plannerWeekStart = shiftDateKey(plannerWeekStart, -7);
+  else if (command === "plan-next") plannerWeekStart = shiftDateKey(plannerWeekStart, 7);
+  else plannerWeekStart = mondayKeyOf(new Date());
+  renderPlanner();
+}
+
+/* ---------- Layout: overlapping tasks share the column side by side ---------- */
+
+function plannerDayItems(dateKey) {
+  return tasks
+    .filter((t) => t.scheduledDate === dateKey && t.startTime)
+    .map((t) => {
+      const start = timeToMinutes(t.startTime);
+      return { task: t, start, end: start + t.durationMinutes };
+    });
+}
+
+function layoutPlannerDay(items) {
+  items.sort((a, b) => a.start - b.start || b.end - a.end);
+  const out = [];
+  let cluster = [];
+  let clusterEnd = -1;
+
+  const flush = () => {
+    if (!cluster.length) return;
+    const laneEnds = [];
+    cluster.forEach((it) => {
+      let lane = laneEnds.findIndex((end) => end <= it.start);
+      if (lane < 0) { lane = laneEnds.length; laneEnds.push(it.end); } else { laneEnds[lane] = it.end; }
+      it.lane = lane;
+    });
+    cluster.forEach((it) => {
+      it.lanes = laneEnds.length;
+      it.overlaps = cluster.some((o) => o !== it && o.start < it.end && o.end > it.start);
+    });
+    out.push(...cluster);
+    cluster = [];
+  };
+
+  items.forEach((it) => {
+    if (cluster.length && it.start >= clusterEnd) { flush(); clusterEnd = -1; }
+    cluster.push(it);
+    clusterEnd = Math.max(clusterEnd, it.end);
+  });
+  flush();
+  return out;
+}
+
+/* ---------- Rendering ---------- */
+
+function plannerCheckHTML(task) {
+  const id = escapeHtml(task.id);
+  return `
+    <label class="check pl-check">
+      <input type="checkbox" class="toggle-complete" data-id="${id}" ${task.completed ? "checked" : ""} aria-label="Mark ${escapeHtml(task.title)} as done" />
+      <span class="check-box" aria-hidden="true"></span>
+    </label>`;
+}
+
+function plannerBlockHTML(it) {
+  const t = it.task;
+  const id = escapeHtml(t.id);
+  const range = `${formatClock(it.start)} – ${formatClock(it.end)}`;
+  const afterDue = !t.completed && t.dueDate && t.scheduledDate > t.dueDate;
+  const classes = [
+    "pl-block", subjectClass(t.subject),
+    t.completed ? "is-done" : "",
+    t.durationMinutes <= PLANNER_STEP ? "is-short" : "",
+    it.overlaps ? "is-overlap" : "",
+    it.lanes >= 3 ? "is-narrow" : "",
+    afterDue ? "is-after-due" : ""
+  ].filter(Boolean).join(" ");
+
+  return `
+    <div class="${classes}" data-drag-id="${id}" data-kind="block"
+         style="--row:${(it.start - PLANNER_DAY_START) / PLANNER_STEP};--span:${t.durationMinutes / PLANNER_STEP};--lane:${it.lane};--lanes:${it.lanes}"
+         ${afterDue ? 'title="Planned after its deadline"' : ""}>
+      ${plannerCheckHTML(t)}
+      <button type="button" class="pl-block-main" data-action="edit" data-id="${id}" aria-label="Edit ${escapeHtml(t.title)}, ${range}">
+        <span class="pl-block-title">${t.completed ? '<i class="fa-solid fa-check" aria-hidden="true"></i> ' : ""}${escapeHtml(t.title)}</span>
+        <span class="pl-block-time">${range} · ${t.durationMinutes} min</span>
+      </button>
+      <span class="pl-resize" data-resize-id="${id}" aria-hidden="true"></span>
+    </div>`;
+}
+
+function plannerCardHTML(task) {
+  const id = escapeHtml(task.id);
+  return `
+    <article class="pl-card ${subjectClass(task.subject)}" data-drag-id="${id}" data-kind="card">
+      ${plannerCheckHTML(task)}
+      <button type="button" class="pl-card-main" data-action="edit" data-id="${id}" aria-label="Edit ${escapeHtml(task.title)}">${escapeHtml(task.title)}</button>
+      <i class="fa-solid fa-grip-vertical pl-grip" aria-hidden="true"></i>
+      <div class="pl-card-meta">
+        ${subjectChipHTML(task.subject)}
+        <span class="chip chip-dur"><i class="fa-regular fa-clock" aria-hidden="true"></i> ${task.durationMinutes} min</span>
+        ${priorityHTML(task.priority)}
+        ${getDeadlineBadgeHTML(task.dueDate, false)}
+      </div>
+    </article>`;
+}
+
+function renderPlanner() {
+  if (plannerBusy) { plannerRenderQueued = true; return; }
+  const board = $("pl-board");
+  const scroller = $("pl-scroll");
+  if (!board || !scroller) return;
+
+  const keepLeft = scroller.scrollLeft;
+  const keepTop = scroller.scrollTop;
+  const days = plannerWeekDays();
+  const todayKey = getRelativeDate(0);
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+
+  $("pl-range").textContent = plannerRangeLabel(days);
+
+  const head = `
+    <div class="pl-head">
+      <div class="pl-corner"></div>
+      ${days.map(({ key, date }) => `
+        <div class="pl-dayhead${key === todayKey ? " is-today" : ""}"${key === todayKey ? ' aria-current="date"' : ""}>
+          <span class="pl-dow">${DAY_SHORT[date.getDay()]}</span>
+          <span class="pl-date">${date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
+        </div>`).join("")}
+    </div>`;
+
+  let labels = "";
+  for (let i = 0; i <= PLANNER_SLOTS; i++) {
+    labels += `<div class="pl-time${i % 2 ? " is-half" : ""}" style="--row:${i}">${formatClock(PLANNER_DAY_START + i * PLANNER_STEP)}</div>`;
+  }
+
+  const cols = days.map(({ key }) => {
+    const items = layoutPlannerDay(plannerDayItems(key));
+    const isToday = key === todayKey;
+    const nowLine = isToday && nowMin >= PLANNER_DAY_START && nowMin <= PLANNER_DAY_END
+      ? `<div class="pl-now" style="--row:${(nowMin - PLANNER_DAY_START) / PLANNER_STEP}" aria-hidden="true"></div>`
+      : "";
+    return `<div class="pl-col${isToday ? " is-today" : ""}" data-date="${key}" aria-label="${escapeHtml(formatDayShort(key))}">${items.map(plannerBlockHTML).join("")}${nowLine}</div>`;
+  }).join("");
+
+  board.innerHTML = `${head}<div class="pl-body"><div class="pl-gutter" aria-hidden="true">${labels}</div>${cols}</div>`;
+
+  if (!plannerDidInitialScroll && scroller.clientHeight > 0) {
+    // First time the planner is shown: start near the morning (or just before "now")
+    plannerDidInitialScroll = true;
+    const slotH = board.querySelector(".pl-col").offsetHeight / PLANNER_SLOTS;
+    const inThisWeek = days.some((d) => d.key === todayKey);
+    const targetMin = Math.min(Math.max(7 * 60, inThisWeek ? nowMin - 60 : 0), PLANNER_DAY_END - 4 * 60);
+    scroller.scrollTop = ((targetMin - PLANNER_DAY_START) / PLANNER_STEP) * slotH;
+  } else {
+    scroller.scrollTop = keepTop;
+  }
+  scroller.scrollLeft = keepLeft;
+
+  renderPlannerViewer();
+}
+
+function renderPlannerViewer() {
+  const list = $("pl-viewer-list");
+  if (!list) return;
+  const keepTop = list.scrollTop;
+  const keepLeft = list.scrollLeft;
+
+  const items = tasks
+    .filter((t) => !t.completed && !isScheduled(t) && (plannerFilter === "all" || t.priority === plannerFilter))
+    .sort((a, b) => (a.dueDate || "").localeCompare(b.dueDate || "") || (PRIORITY_RANK[b.priority] || 0) - (PRIORITY_RANK[a.priority] || 0));
+
+  $("pl-viewer-count").textContent = items.length;
+  document.querySelectorAll("[data-plfilter]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.plfilter === plannerFilter);
+  });
+
+  list.innerHTML = items.length
+    ? items.map(plannerCardHTML).join("")
+    : `<p class="pl-empty">${plannerFilter === "all" ? "Every pending task is on the planner." : `No ${plannerFilter.toLowerCase()} priority tasks waiting.`}</p>`;
+
+  list.scrollTop = keepTop;
+  list.scrollLeft = keepLeft;
+}
+
+function flushPlannerRender() {
+  if (plannerRenderQueued) {
+    plannerRenderQueued = false;
+    renderPlanner();
+  }
+}
+
+/* ---------- Drop-time maths (30-minute snapping) ---------- */
+
+// pixels from the top of the day column -> nearest 30-minute line (0 = 5:00 AM)
+function snapSlotIndex(pxFromTop, slotHeight) {
+  return Math.max(0, Math.round(pxFromTop / slotHeight));
+}
+
+function plannerTargetAt(x, y, task, offsetY) {
+  const viewer = $("pl-viewer").getBoundingClientRect();
+  if (x >= viewer.left && x < viewer.right && y >= viewer.top && y < viewer.bottom) return { zone: "viewer" };
+
+  const scroller = $("pl-scroll");
+  const r = scroller.getBoundingClientRect();
+  if (x < r.left || x >= r.right || y < r.top || y >= r.bottom) return null;
+
+  const head = scroller.querySelector(".pl-head");
+  const gutter = scroller.querySelector(".pl-gutter");
+  if (!head || !gutter) return null;
+  if (y < r.top + head.offsetHeight) return null;
+  if (x < gutter.getBoundingClientRect().right) return null;
+
+  for (const col of scroller.querySelectorAll(".pl-col")) {
+    const cr = col.getBoundingClientRect();
+    if (x < cr.left || x >= cr.right) continue;
+    const slotH = cr.height / PLANNER_SLOTS;
+    const idx = snapSlotIndex(y - offsetY - cr.top, slotH);
+    const startMin = PLANNER_DAY_START + idx * PLANNER_STEP;
+    const ok = startMin + task.durationMinutes <= PLANNER_DAY_END;
+    return { zone: "grid", col, date: col.dataset.date, idx, startMin, ok };
+  }
+  return null;
+}
+
+/* ---------- Dragging ---------- */
+
+function onPlannerPointerDown(e) {
+  if (drag || resize) return;
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+
+  const handle = e.target.closest(".pl-resize");
+  if (handle) { startResize(e, handle); return; }
+  if (e.target.closest(".check")) return;
+
+  const src = e.target.closest("[data-drag-id]");
+  if (!src) return;
+  const task = tasks.find((t) => t.id === src.dataset.dragId);
+  if (!task) return;
+
+  const rect = src.getBoundingClientRect();
+  drag = {
+    id: task.id,
+    kind: src.dataset.kind,
+    srcEl: src,
+    pointerId: e.pointerId,
+    pointerType: e.pointerType,
+    startX: e.clientX,
+    startY: e.clientY,
+    last: { x: e.clientX, y: e.clientY },
+    // A block keeps the spot you grabbed it by; a card drops with its top at the pointer
+    offsetY: src.dataset.kind === "block" ? e.clientY - rect.top : 0,
+    active: false,
+    target: null,
+    label: "",
+    timer: null,
+    raf: 0
+  };
+
+  if (e.pointerType === "touch") drag.timer = setTimeout(activateDrag, 260);
+  document.addEventListener("pointermove", onDragMove);
+  document.addEventListener("pointerup", onDragEnd);
+  document.addEventListener("pointercancel", onDragCancel);
+}
+
+function activateDrag() {
+  if (!drag || drag.active) return;
+  const task = tasks.find((t) => t.id === drag.id);
+  if (!task) { finishDrag(false); return; }
+
+  drag.active = true;
+  plannerBusy = true;
+  clearTimeout(drag.timer);
+
+  const ghost = document.createElement("div");
+  ghost.className = `pl-ghost ${subjectClass(task.subject)}`;
+  ghost.innerHTML = `<strong>${escapeHtml(task.title)}</strong><span>${task.durationMinutes} min</span>`;
+  document.body.appendChild(ghost);
+  drag.ghost = ghost;
+
+  const drop = document.createElement("div");
+  drop.className = "pl-drop";
+  drag.dropEl = drop;
+
+  document.body.classList.add("is-planner-dragging");
+  drag.srcEl.classList.add("is-dragging");
+  try { drag.srcEl.setPointerCapture(drag.pointerId); } catch (err) {}
+  if (navigator.vibrate) navigator.vibrate(10);
+
+  moveGhost();
+  updateDragTarget();
+  drag.raf = requestAnimationFrame(dragAutoScroll);
+}
+
+function onDragMove(e) {
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  drag.last = { x: e.clientX, y: e.clientY };
+
+  if (!drag.active) {
+    const moved = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
+    if (drag.pointerType === "touch") {
+      if (moved > 8) finishDrag(false);   // finger moved before the hold finished: it's a scroll
+    } else if (moved > 5) {
+      activateDrag();
+    }
+    return;
+  }
+  if (e.cancelable) e.preventDefault();
+  moveGhost();
+  updateDragTarget();
+}
+
+function onDragEnd(e) {
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  drag.last = { x: e.clientX, y: e.clientY };
+  if (drag.active) updateDragTarget();
+  finishDrag(true);
+}
+
+function onDragCancel(e) {
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  finishDrag(false);
+}
+
+function moveGhost() {
+  if (!drag || !drag.ghost) return;
+  drag.ghost.style.transform = `translate(${drag.last.x + 14}px, ${drag.last.y + 14}px)`;
+}
+
+function clearTargetMarks() {
+  document.querySelectorAll(".pl-col.is-target, .pl-col.is-target-bad").forEach((c) => c.classList.remove("is-target", "is-target-bad"));
+}
+
+function updateDragTarget() {
+  if (!drag || !drag.active) return;
+  const task = tasks.find((t) => t.id === drag.id);
+  if (!task) return;
+
+  const t = plannerTargetAt(drag.last.x, drag.last.y, task, drag.offsetY);
+  drag.target = t;
+  clearTargetMarks();
+  $("pl-viewer").classList.toggle("is-return", Boolean(t && t.zone === "viewer" && drag.kind === "block"));
+
+  if (!t || t.zone !== "grid") {
+    drag.dropEl.remove();
+    drag.label = "";
+    return;
+  }
+
+  t.col.classList.add(t.ok ? "is-target" : "is-target-bad");
+  if (drag.dropEl.parentElement !== t.col) t.col.appendChild(drag.dropEl);
+  drag.dropEl.classList.toggle("is-invalid", !t.ok);
+  drag.dropEl.style.setProperty("--row", Math.min(t.idx, PLANNER_SLOTS - 1));
+  drag.dropEl.style.setProperty("--span", task.durationMinutes / PLANNER_STEP);
+
+  const day = DAY_SHORT[parseDateKey(t.date).getDay()];
+  const label = t.ok
+    ? `${day} · ${formatClock(t.startMin)} – ${formatClock(t.startMin + task.durationMinutes)}`
+    : `Would end after ${formatClock(PLANNER_DAY_END)}`;
+  if (label !== drag.label) {
+    drag.label = label;
+    drag.dropEl.innerHTML = `<strong>${label}</strong>`;
+  }
+}
+
+// Scroll the timetable (and the page) when dragging near an edge
+function dragAutoScroll() {
+  if (!drag || !drag.active) return;
+  const { x, y } = drag.last;
+  const speed = 14;
+  const edge = 48;
+  let scrolled = false;
+
+  const scroller = $("pl-scroll");
+  const r = scroller.getBoundingClientRect();
+  if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) {
+    const headH = scroller.querySelector(".pl-head").offsetHeight;
+    const gutterW = scroller.querySelector(".pl-gutter").offsetWidth;
+    let dx = 0;
+    let dy = 0;
+    if (y > r.bottom - edge) dy = speed;
+    else if (y < r.top + headH + edge) dy = -speed;
+    if (x > r.right - edge) dx = speed;
+    else if (x < r.left + gutterW + edge) dx = -speed;
+    if (dx || dy) { scroller.scrollBy(dx, dy); scrolled = true; }
+  }
+  if (y > window.innerHeight - 56) { window.scrollBy(0, speed); scrolled = true; }
+  else if (y < 56) { window.scrollBy(0, -speed); scrolled = true; }
+
+  if (scrolled) updateDragTarget();
+  drag.raf = requestAnimationFrame(dragAutoScroll);
+}
+
+function finishDrag(drop) {
+  const d = drag;
+  if (!d) return;
+  clearTimeout(d.timer);
+  cancelAnimationFrame(d.raf);
+  document.removeEventListener("pointermove", onDragMove);
+  document.removeEventListener("pointerup", onDragEnd);
+  document.removeEventListener("pointercancel", onDragCancel);
+
+  if (d.ghost) d.ghost.remove();
+  if (d.dropEl) d.dropEl.remove();
+  if (d.srcEl) d.srcEl.classList.remove("is-dragging");
+  try { if (d.active) d.srcEl.releasePointerCapture(d.pointerId); } catch (err) {}
+  document.body.classList.remove("is-planner-dragging");
+  clearTargetMarks();
+  $("pl-viewer").classList.remove("is-return");
+
+  drag = null;
+  plannerBusy = false;
+  if (d.active) plannerSuppressClickUntil = Date.now() + 350;
+
+  if (d.active && drop) applyDrop(d);
+  else flushPlannerRender();
+}
+
+function applyDrop(d) {
+  const task = tasks.find((t) => t.id === d.id);
+  const t = d.target;
+  if (!task || !t) { flushPlannerRender(); return; }
+
+  if (t.zone === "viewer") {
+    if (d.kind === "block") {
+      task.scheduledDate = null;
+      task.startTime = null;
+      commit();
+      showToast("Moved back to the Task Viewer.", "success");
+    } else {
+      flushPlannerRender();
+    }
+    return;
+  }
+
+  if (!t.ok) {
+    showToast(`A ${task.durationMinutes}-minute task can't start at ${formatClock(t.startMin)}. It would end after ${formatClock(PLANNER_DAY_END)}.`, "error");
+    flushPlannerRender();
+    return;
+  }
+
+  const time = minutesToTime(t.startMin);
+  if (task.scheduledDate === t.date && task.startTime === time) { flushPlannerRender(); return; }
+
+  // Same task object is updated in place, so nothing is ever duplicated
+  task.scheduledDate = t.date;
+  task.startTime = time;
+  commit();
+  showToast(`Planned for ${formatDayShort(t.date)} at ${formatClock(t.startMin)}.`, "success");
+}
+
+/* ---------- Resizing (drag the bottom edge of a block) ---------- */
+
+function startResize(e, handle) {
+  const block = handle.closest(".pl-block");
+  const task = tasks.find((t) => t.id === handle.dataset.resizeId);
+  if (!block || !task) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  resize = {
+    id: task.id,
+    block,
+    col: block.parentElement,
+    handle,
+    pointerId: e.pointerId,
+    startMin: timeToMinutes(task.startTime),
+    oldDur: task.durationMinutes,
+    newDur: task.durationMinutes
+  };
+  plannerBusy = true;
+  block.classList.add("is-resizing");
+  document.body.classList.add("is-planner-resizing");
+  try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+  handle.addEventListener("pointermove", onResizeMove);
+  handle.addEventListener("pointerup", onResizeEnd);
+  handle.addEventListener("pointercancel", onResizeCancel);
+}
+
+function onResizeMove(e) {
+  if (!resize || e.pointerId !== resize.pointerId) return;
+  const cr = resize.col.getBoundingClientRect();
+  const slotH = cr.height / PLANNER_SLOTS;
+  const endIdx = Math.round((e.clientY - cr.top) / slotH);
+  const endMin = PLANNER_DAY_START + endIdx * PLANNER_STEP;
+  const dur = Math.max(PLANNER_STEP, Math.min(endMin - resize.startMin, PLANNER_DAY_END - resize.startMin));
+  resize.newDur = dur;
+
+  resize.block.style.setProperty("--span", dur / PLANNER_STEP);
+  resize.block.classList.toggle("is-short", dur <= PLANNER_STEP);
+  const timeEl = resize.block.querySelector(".pl-block-time");
+  if (timeEl) timeEl.textContent = `${formatClock(resize.startMin)} – ${formatClock(resize.startMin + dur)} · ${dur} min`;
+}
+
+function endResize(save) {
+  const r = resize;
+  if (!r) return;
+  r.handle.removeEventListener("pointermove", onResizeMove);
+  r.handle.removeEventListener("pointerup", onResizeEnd);
+  r.handle.removeEventListener("pointercancel", onResizeCancel);
+  try { r.handle.releasePointerCapture(r.pointerId); } catch (err) {}
+  r.block.classList.remove("is-resizing");
+  document.body.classList.remove("is-planner-resizing");
+
+  resize = null;
+  plannerBusy = false;
+  plannerSuppressClickUntil = Date.now() + 350;
+
+  const task = tasks.find((t) => t.id === r.id);
+  if (save && task && r.newDur !== r.oldDur) {
+    task.durationMinutes = r.newDur;
+    commit();
+  } else {
+    plannerRenderQueued = false;
+    renderPlanner();
+  }
+}
+function onResizeEnd(e) { if (resize && e.pointerId === resize.pointerId) endResize(true); }
+function onResizeCancel(e) { if (resize && e.pointerId === resize.pointerId) endResize(false); }
+
+/* ---------- Wiring ---------- */
+
+function populatePlanTimeOptions() {
+  const select = $("form-plan-time");
+  for (let m = PLANNER_DAY_START; m < PLANNER_DAY_END; m += PLANNER_STEP) {
+    const opt = document.createElement("option");
+    opt.value = minutesToTime(m);
+    opt.textContent = formatClock(m);
+    select.appendChild(opt);
+  }
+}
+
+function setupPlannerEvents() {
+  populatePlanTimeOptions();
+
+  const view = $("view-planner");
+  view.addEventListener("pointerdown", onPlannerPointerDown);
+  view.addEventListener("dragstart", (e) => e.preventDefault());
+  view.addEventListener("contextmenu", (e) => { if (drag) e.preventDefault(); });
+
+  // A drag ends with a click on the block: swallow it so the edit dialog doesn't open
+  view.addEventListener("click", (e) => {
+    if (Date.now() < plannerSuppressClickUntil) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, true);
+
+  // Once a touch drag has started, stop the page from scrolling under the finger
+  document.addEventListener("touchmove", (e) => {
+    if (drag && drag.active && e.cancelable) e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && drag) finishDrag(false);
+  });
+
+  $("pl-viewer").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-plfilter]");
+    if (!btn) return;
+    plannerFilter = btn.dataset.plfilter;
+    renderPlannerViewer();
+  });
+
+  // Keep the "now" line current
+  setInterval(() => {
+    if (currentView === "planner" && !plannerBusy) renderPlanner();
+  }, 60000);
+}
+
+/* ==================================================
    HELPERS
 ================================================== */
 
@@ -1325,6 +2126,7 @@ function escapeHtml(str) {
 
 applyTheme(document.documentElement.getAttribute("data-theme") || "light");
 setupEventListeners();
+setupPlannerEvents();
 setView(VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home");
 tasks = [];
 renderApp();

@@ -71,6 +71,9 @@
         <button type="button" class="nav-item" data-go="week" title="This week">
           <i class="fa-regular fa-calendar"></i><span class="nav-text">This week</span>
         </button>
+        <button type="button" class="nav-item" data-go="planner" title="Weekly planner">
+          <i class="fa-solid fa-calendar-week"></i><span class="nav-text">Planner</span>
+        </button>
         <button type="button" class="nav-item" data-go="tasks" title="Tasks">
           <i class="fa-solid fa-list-check"></i><span class="nav-text">Tasks</span>
         </button>
@@ -173,6 +176,48 @@
             </button>
           </header>
           <div class="week-board" id="week-board"></div>
+        </section>
+
+        <!-- WEEKLY PLANNER -->
+        <section class="view" id="view-planner" data-view="planner" aria-labelledby="planner-title">
+          <header class="view-head">
+            <div class="view-head-text">
+              <h1 class="view-title" id="planner-title">Weekly planner</h1>
+              <p class="lede">Drag a task onto a day and time. Drag a block to move it, or pull its bottom edge to change the length.</p>
+            </div>
+            <button type="button" class="btn btn-primary hide-mobile" data-cmd="add">
+              <i class="fa-solid fa-plus"></i> Add task
+            </button>
+          </header>
+
+          <div class="pl-toolbar">
+            <div class="pl-nav" role="group" aria-label="Week navigation">
+              <button type="button" class="btn btn-secondary" data-cmd="plan-prev" aria-label="Previous week"><i class="fa-solid fa-chevron-left"></i> <span class="pl-nav-label">Previous</span></button>
+              <button type="button" class="btn btn-secondary" data-cmd="plan-today">Today</button>
+              <button type="button" class="btn btn-secondary" data-cmd="plan-next" aria-label="Next week"><span class="pl-nav-label">Next</span> <i class="fa-solid fa-chevron-right"></i></button>
+            </div>
+            <h2 class="pl-range" id="pl-range" aria-live="polite"></h2>
+          </div>
+
+          <div class="pl-layout">
+            <div class="pl-scroll" id="pl-scroll" tabindex="0" role="region" aria-label="Weekly timetable, 5:00 AM to 11:00 PM">
+              <div class="pl-board" id="pl-board"></div>
+            </div>
+
+            <aside class="pl-viewer panel" id="pl-viewer" aria-labelledby="pl-viewer-title">
+              <div class="pl-viewer-head">
+                <h2 id="pl-viewer-title">Task Viewer</h2>
+                <span class="count-pill" id="pl-viewer-count" aria-label="Tasks waiting to be scheduled">0</span>
+              </div>
+              <div class="segmented pl-filter" role="group" aria-label="Filter by priority">
+                <button type="button" class="seg-btn active" data-plfilter="all">All</button>
+                <button type="button" class="seg-btn" data-plfilter="High">High</button>
+                <button type="button" class="seg-btn" data-plfilter="Medium">Medium</button>
+                <button type="button" class="seg-btn" data-plfilter="Low">Low</button>
+              </div>
+              <div class="pl-viewer-list" id="pl-viewer-list"></div>
+            </aside>
+          </div>
         </section>
 
         <!-- TASKS -->
@@ -285,6 +330,10 @@
         <button type="button" class="icon-btn" data-close="more-sheet" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
       </div>
       <div class="sheet-list">
+        <button type="button" class="sheet-item" data-go="planner">
+          <span class="sheet-icon"><i class="fa-solid fa-calendar-week"></i></span>
+          <span class="sheet-text"><strong>Weekly planner</strong><span>Drag tasks onto days and times</span></span>
+        </button>
         <button type="button" class="sheet-item" data-cmd="add-repeating">
           <span class="sheet-icon"><i class="fa-solid fa-arrows-rotate"></i></span>
           <span class="sheet-text"><strong>Add repeating task</strong><span>Create a task that repeats weekly</span></span>
@@ -353,6 +402,40 @@
               <option value="High">High</option>
               <option value="Medium" selected>Medium</option>
               <option value="Low">Low</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="form-duration">Duration</label>
+            <select id="form-duration" class="input">
+              <option value="15">15 min</option>
+              <option value="30">30 min</option>
+              <option value="45">45 min</option>
+              <option value="60" selected>60 min</option>
+              <option value="90">90 min</option>
+              <option value="120">120 min</option>
+              <option value="150">150 min</option>
+              <option value="180">180 min</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div class="form-group hidden" id="form-duration-custom-group">
+            <label for="form-duration-custom">Custom (minutes)</label>
+            <input type="number" id="form-duration-custom" class="input" min="5" max="480" step="5" value="45" inputmode="numeric" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="form-plan-date">Plan on</label>
+            <input type="date" id="form-plan-date" class="input" />
+          </div>
+          <div class="form-group">
+            <label for="form-plan-time">Start time</label>
+            <select id="form-plan-time" class="input">
+              <option value="">Not scheduled</option>
             </select>
           </div>
         </div>
@@ -474,6 +557,8 @@
         <div class="details-row"><span class="details-label">Subject</span><span id="detail-subject"></span></div>
         <div class="details-row"><span class="details-label">Due date</span><span id="detail-date"></span></div>
         <div class="details-row"><span class="details-label">Priority</span><span id="detail-priority"></span></div>
+        <div class="details-row"><span class="details-label">Duration</span><span id="detail-duration"></span></div>
+        <div class="details-row"><span class="details-label">Planned</span><span id="detail-planned"></span></div>
         <div class="details-row"><span class="details-label">Status</span><span id="detail-status"></span></div>
         <div class="details-row block">
           <span class="details-label">Notes</span>
