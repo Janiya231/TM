@@ -658,6 +658,13 @@ function setupEventListeners() {
   $("repeat-form-pattern").addEventListener("change", updateRepeatPatternUI);
 
   $("form-duration").addEventListener("change", syncDurationUI);
+  // Plan date follows the due date until the user picks a different plan date
+  $("form-date").addEventListener("change", () => {
+    if (planDateLinked) $("form-plan-date").value = $("form-date").value;
+  });
+  $("form-plan-date").addEventListener("change", () => {
+    planDateLinked = $("form-plan-date").value === $("form-date").value;
+  });
 
   // Details modal
   $("details-close-btn").addEventListener("click", () => hideOverlay(detailsModal));
@@ -880,7 +887,7 @@ function handleFormSubmit(e) {
 
   // Planning is optional: choosing a start time schedules the task
   const planTime = $("form-plan-time").value;
-  const planDate = $("form-plan-date").value;
+  const planDate = $("form-plan-date").value || dueDate;
   let scheduledDate = null;
   let startTime = null;
   if (planTime) {
@@ -989,6 +996,8 @@ function confirmDeleteTask() {
    MODALS
 ================================================== */
 
+let planDateLinked = true; // plan date mirrors due date while true
+
 function openTaskModal(id = null, presetDate = null) {
   taskForm.reset();
   if (id) {
@@ -1002,12 +1011,15 @@ function openTaskModal(id = null, presetDate = null) {
     $("form-priority").value = task.priority;
     $("form-notes").value = task.notes || "";
     setDurationInputs(task.durationMinutes);
-    $("form-plan-date").value = task.scheduledDate || "";
+    $("form-plan-date").value = task.scheduledDate || task.dueDate;
     $("form-plan-time").value = task.startTime || "";
+    planDateLinked = !task.scheduledDate || task.scheduledDate === task.dueDate;
   } else {
     modalTitle.textContent = "Add task";
     taskIdInput.value = "";
     $("form-date").value = presetDate || getRelativeDate(0);
+    $("form-plan-date").value = $("form-date").value;
+    planDateLinked = true;
     setDurationInputs(60);
   }
   showOverlay(taskModal, "#form-title");
