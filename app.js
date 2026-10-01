@@ -1487,6 +1487,20 @@ function taskHTML(task, { compact = false } = {}) {
 
 let plannerWeekStart = mondayKeyOf(new Date());
 let plannerFilter = "all";
+const PLANNER_VIEWER_POS_KEY = "study_planner_viewer_pos"; // "top" | "bottom"
+let plannerViewerPos = (() => {
+  try { return localStorage.getItem(PLANNER_VIEWER_POS_KEY) === "top" ? "top" : "bottom"; } catch (err) { return "bottom"; }
+})();
+
+function applyPlannerViewerPos() {
+  const layout = $("pl-layout");
+  if (layout) layout.dataset.viewer = plannerViewerPos;
+  document.querySelectorAll("[data-plpos]").forEach((btn) => {
+    const on = btn.dataset.plpos === plannerViewerPos;
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", String(on));
+  });
+}
 let plannerBusy = false;            // true while dragging / resizing: re-render waits
 let plannerRenderQueued = false;
 let plannerDidInitialScroll = false;
@@ -2054,6 +2068,7 @@ function populatePlanTimeOptions() {
 
 function setupPlannerEvents() {
   populatePlanTimeOptions();
+  applyPlannerViewerPos();
 
   const view = $("view-planner");
   view.addEventListener("pointerdown", onPlannerPointerDown);
@@ -2078,6 +2093,13 @@ function setupPlannerEvents() {
   });
 
   $("pl-viewer").addEventListener("click", (e) => {
+    const pos = e.target.closest("[data-plpos]");
+    if (pos) {
+      plannerViewerPos = pos.dataset.plpos === "top" ? "top" : "bottom";
+      try { localStorage.setItem(PLANNER_VIEWER_POS_KEY, plannerViewerPos); } catch (err) { /* private mode */ }
+      applyPlannerViewerPos();
+      return;
+    }
     const btn = e.target.closest("[data-plfilter]");
     if (!btn) return;
     plannerFilter = btn.dataset.plfilter;

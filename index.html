@@ -199,21 +199,29 @@
             <h2 class="pl-range" id="pl-range" aria-live="polite"></h2>
           </div>
 
-          <div class="pl-layout">
+          <div class="pl-layout" id="pl-layout" data-viewer="bottom">
             <div class="pl-scroll" id="pl-scroll" tabindex="0" role="region" aria-label="Weekly timetable, 5:00 AM to 11:00 PM">
               <div class="pl-board" id="pl-board"></div>
             </div>
 
             <aside class="pl-viewer panel" id="pl-viewer" aria-labelledby="pl-viewer-title">
               <div class="pl-viewer-head">
-                <h2 id="pl-viewer-title">Task Viewer</h2>
-                <span class="count-pill" id="pl-viewer-count" aria-label="Tasks waiting to be scheduled">0</span>
-              </div>
-              <div class="segmented pl-filter" role="group" aria-label="Filter by priority">
-                <button type="button" class="seg-btn active" data-plfilter="all">All</button>
-                <button type="button" class="seg-btn" data-plfilter="High">High</button>
-                <button type="button" class="seg-btn" data-plfilter="Medium">Medium</button>
-                <button type="button" class="seg-btn" data-plfilter="Low">Low</button>
+                <div class="pl-viewer-title">
+                  <h2 id="pl-viewer-title">Task Viewer</h2>
+                  <span class="count-pill" id="pl-viewer-count" aria-label="Tasks waiting to be scheduled">0</span>
+                </div>
+                <div class="pl-viewer-tools">
+                  <div class="segmented pl-filter" role="group" aria-label="Filter by priority">
+                    <button type="button" class="seg-btn active" data-plfilter="all">All</button>
+                    <button type="button" class="seg-btn" data-plfilter="High">High</button>
+                    <button type="button" class="seg-btn" data-plfilter="Medium">Medium</button>
+                    <button type="button" class="seg-btn" data-plfilter="Low">Low</button>
+                  </div>
+                  <div class="segmented pl-pos" role="group" aria-label="Task list position">
+                    <button type="button" class="seg-btn" data-plpos="top" aria-pressed="false"><i class="fa-solid fa-arrow-up" aria-hidden="true"></i> Top</button>
+                    <button type="button" class="seg-btn active" data-plpos="bottom" aria-pressed="true"><i class="fa-solid fa-arrow-down" aria-hidden="true"></i> Bottom</button>
+                  </div>
+                </div>
               </div>
               <div class="pl-viewer-list" id="pl-viewer-list"></div>
             </aside>
