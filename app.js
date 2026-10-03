@@ -89,7 +89,24 @@ async function initializeAuthenticatedApp(session) {
   passwordError.textContent = "";
   setAuthBusy(false);
   lockHelp.textContent = `Signed in as ${currentUser.email}`;
-  await loadTasksFromCloud();
+
+  // Render the device copy immediately. Cloud access must never block the UI.
+  tasks = loadTasks();
+  plannerLocalCache = readPlannerLocal();
+  renderApp();
+
+  // Sync with Supabase in the background. If the network is slow/unavailable,
+  // the user can still use the app with the local copy.
+  try {
+    await Promise.race([
+      loadTasksFromCloud(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Cloud sync timed out")), 10000))
+    ]);
+  } catch (err) {
+    console.warn("Cloud startup sync skipped:", err);
+    showToast("Cloud sync is taking too long. Your local tasks are still available.", "error");
+  }
+
   setupRealtimeSync();
   renderApp();
 }
@@ -446,29 +463,68 @@ async function saveTasksToCloud() {
   if (!currentUser) return;
   if (saveInProgress) { queuedSave = true; return; }
   saveInProgress = true;
+
+  // Keep requests comfortably below URL/body limits. This also prevents one
+  // unusually large repeating-task list from making the whole sync fail.
+  const CLOUD_BATCH_SIZE = 100;
+
   try {
-    const { data: existing, error: existingError } = await supabaseClient.from("tasks").select("id").eq("user_id", currentUser.id);
-    if (existingError) throw existingError;
-    const wantedIds = new Set(tasks.map(t => t.id));
+    const { data: existing, error: existingError } =
+      await supabaseClient.from("tasks").select("id").eq("user_id", currentUser.id);
+    if (existingError) throw new Error(`Loading cloud task IDs failed: ${existingError.message}`);
+
+    const wantedIds = new Set(tasks.map(t => t.id).filter(Boolean));
     const staleIds = (existing || []).map(r => r.id).filter(id => !wantedIds.has(id));
-    if (staleIds.length) {
-      const { error } = await supabaseClient.from("tasks").delete().eq("user_id", currentUser.id).in("id", staleIds);
-      if (error) throw error;
+
+    // Do not put hundreds/thousands of IDs into one .in(...) request.
+    for (let i = 0; i < staleIds.length; i += CLOUD_BATCH_SIZE) {
+      const batch = staleIds.slice(i, i + CLOUD_BATCH_SIZE);
+      const { error } = await supabaseClient
+        .from("tasks")
+        .delete()
+        .eq("user_id", currentUser.id)
+        .in("id", batch);
+      if (error) throw new Error(`Removing old cloud tasks failed: ${error.message}`);
     }
-    if (tasks.length) {
-      let { error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" });
+
+    const rows = tasks.filter(t => t && t.id).map(taskToRow);
+
+    for (let i = 0; i < rows.length; i += CLOUD_BATCH_SIZE) {
+      const batch = rows.slice(i, i + CLOUD_BATCH_SIZE);
+      let { error } = await supabaseClient
+        .from("tasks")
+        .upsert(batch, { onConflict: "id" });
+
       if (error && plannerColumnsOk && isMissingPlannerColumn(error)) {
-        // Cloud table doesn't have the planner columns yet: save everything else, keep planner data on this device
+        // Cloud table doesn't have the planner columns yet: save everything
+        // else, while keeping planner data on this device.
         plannerColumnsOk = false;
         showToast("Planner times are saved on this device only until the cloud table gets its new columns.", "error");
-        ({ error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" }));
+
+        const retryRows = batch.map(taskToRow);
+        ({ error } = await supabaseClient
+          .from("tasks")
+          .upsert(retryRows, { onConflict: "id" }));
       }
-      if (error) throw error;
+
+      if (error) {
+        const detail = error.message || error.details || error.hint || "Unknown Supabase error";
+        console.error("Cloud task save failed:", {
+          message: detail,
+          code: error.code,
+          details: error.details,
+          hint: error.hint,
+          batchStart: i,
+          batchSize: batch.length
+        });
+        throw new Error(`Saving cloud tasks failed: ${detail}`);
+      }
     }
+
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch (err) {}
   } catch (err) {
-    console.error(err);
-    showToast("Cloud save failed. Please check your connection.", "error");
+    console.error("Cloud sync error:", err);
+    showToast(`Cloud save failed: ${err.message || "Please check your connection."}`, "error");
   } finally {
     saveInProgress = false;
     if (queuedSave) { queuedSave = false; saveTasksToCloud(); }
@@ -2160,12 +2216,24 @@ tasks = [];
 renderApp();
 
 (async function startApp() {
-  const { data: { session } } = await supabaseClient.auth.getSession();
-  if (session) {
-    await initializeAuthenticatedApp(session);
-  } else {
-    showLogin();
+  // Never leave the page waiting forever for an authentication/network call.
+  try {
+    const result = await Promise.race([
+      supabaseClient.auth.getSession(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Authentication request timed out")), 10000))
+    ]);
+    const session = result?.data?.session || null;
+    if (session) {
+      await initializeAuthenticatedApp(session);
+    } else {
+      showLogin();
+    }
+  } catch (err) {
+    console.warn("Supabase startup unavailable:", err);
+    // The app can still open its sign-in screen instead of appearing frozen.
+    showLogin("Cloud connection timed out. Check your internet connection and try again.");
   }
+
   supabaseClient.auth.onAuthStateChange(async (_event, session) => {
     if (session && !currentUser) await initializeAuthenticatedApp(session);
     else if (!session && currentUser) handleSignOut();
