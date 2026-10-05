@@ -89,24 +89,7 @@ async function initializeAuthenticatedApp(session) {
   passwordError.textContent = "";
   setAuthBusy(false);
   lockHelp.textContent = `Signed in as ${currentUser.email}`;
-
-  // Render the device copy immediately. Cloud access must never block the UI.
-  tasks = loadTasks();
-  plannerLocalCache = readPlannerLocal();
-  renderApp();
-
-  // Sync with Supabase in the background. If the network is slow/unavailable,
-  // the user can still use the app with the local copy.
-  try {
-    await Promise.race([
-      loadTasksFromCloud(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Cloud sync timed out")), 10000))
-    ]);
-  } catch (err) {
-    console.warn("Cloud startup sync skipped:", err);
-    showToast("Cloud sync is taking too long. Your local tasks are still available.", "error");
-  }
-
+  await loadTasksFromCloud();
   setupRealtimeSync();
   renderApp();
 }
@@ -117,6 +100,7 @@ async function handleSignOut() {
   currentUser = null;
   authReady = false;
   tasks = [];
+  AnalyticsEngine.invalidate();
   await supabaseClient.auth.signOut();
   lockHelp.textContent = "Sign in to sync your tasks across your devices.";
   emailInput.value = "";
@@ -422,7 +406,7 @@ function rowToTask(row) {
   const { dayOfWeek, repeatDays } = decodeRepeatDays(row.day_of_week);
   const task = { id: row.id, title: row.title, subject: row.subject, dueDate: row.due_date, priority: row.priority,
     completed: row.completed, recurring: row.recurring, dayOfWeek, endDate: row.end_date,
-    lastDone: row.last_done, notes: row.notes || "" };
+    lastDone: row.last_done, notes: row.notes || "", createdAt: row.created_at || null };
   if (repeatDays) task.repeatDays = repeatDays;
   if ("duration_minutes" in row || "scheduled_date" in row || "start_time" in row) {
     task.durationMinutes = row.duration_minutes;
@@ -463,68 +447,29 @@ async function saveTasksToCloud() {
   if (!currentUser) return;
   if (saveInProgress) { queuedSave = true; return; }
   saveInProgress = true;
-
-  // Keep requests comfortably below URL/body limits. This also prevents one
-  // unusually large repeating-task list from making the whole sync fail.
-  const CLOUD_BATCH_SIZE = 100;
-
   try {
-    const { data: existing, error: existingError } =
-      await supabaseClient.from("tasks").select("id").eq("user_id", currentUser.id);
-    if (existingError) throw new Error(`Loading cloud task IDs failed: ${existingError.message}`);
-
-    const wantedIds = new Set(tasks.map(t => t.id).filter(Boolean));
+    const { data: existing, error: existingError } = await supabaseClient.from("tasks").select("id").eq("user_id", currentUser.id);
+    if (existingError) throw existingError;
+    const wantedIds = new Set(tasks.map(t => t.id));
     const staleIds = (existing || []).map(r => r.id).filter(id => !wantedIds.has(id));
-
-    // Do not put hundreds/thousands of IDs into one .in(...) request.
-    for (let i = 0; i < staleIds.length; i += CLOUD_BATCH_SIZE) {
-      const batch = staleIds.slice(i, i + CLOUD_BATCH_SIZE);
-      const { error } = await supabaseClient
-        .from("tasks")
-        .delete()
-        .eq("user_id", currentUser.id)
-        .in("id", batch);
-      if (error) throw new Error(`Removing old cloud tasks failed: ${error.message}`);
+    if (staleIds.length) {
+      const { error } = await supabaseClient.from("tasks").delete().eq("user_id", currentUser.id).in("id", staleIds);
+      if (error) throw error;
     }
-
-    const rows = tasks.filter(t => t && t.id).map(taskToRow);
-
-    for (let i = 0; i < rows.length; i += CLOUD_BATCH_SIZE) {
-      const batch = rows.slice(i, i + CLOUD_BATCH_SIZE);
-      let { error } = await supabaseClient
-        .from("tasks")
-        .upsert(batch, { onConflict: "id" });
-
+    if (tasks.length) {
+      let { error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" });
       if (error && plannerColumnsOk && isMissingPlannerColumn(error)) {
-        // Cloud table doesn't have the planner columns yet: save everything
-        // else, while keeping planner data on this device.
+        // Cloud table doesn't have the planner columns yet: save everything else, keep planner data on this device
         plannerColumnsOk = false;
         showToast("Planner times are saved on this device only until the cloud table gets its new columns.", "error");
-
-        const retryRows = batch.map(taskToRow);
-        ({ error } = await supabaseClient
-          .from("tasks")
-          .upsert(retryRows, { onConflict: "id" }));
+        ({ error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" }));
       }
-
-      if (error) {
-        const detail = error.message || error.details || error.hint || "Unknown Supabase error";
-        console.error("Cloud task save failed:", {
-          message: detail,
-          code: error.code,
-          details: error.details,
-          hint: error.hint,
-          batchStart: i,
-          batchSize: batch.length
-        });
-        throw new Error(`Saving cloud tasks failed: ${detail}`);
-      }
+      if (error) throw error;
     }
-
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch (err) {}
   } catch (err) {
-    console.error("Cloud sync error:", err);
-    showToast(`Cloud save failed: ${err.message || "Please check your connection."}`, "error");
+    console.error(err);
+    showToast("Cloud save failed. Please check your connection.", "error");
   } finally {
     saveInProgress = false;
     if (queuedSave) { queuedSave = false; saveTasksToCloud(); }
@@ -587,7 +532,7 @@ const importSummary = $("import-summary");
 const importFileInput = $("import-file-input");
 const toastContainer = $("toast-container");
 
-const VIEWS = ["home", "week", "planner", "tasks"];
+const VIEWS = ["home", "week", "planner", "tasks", "analytics"];
 
 /* ==================================================
    THEME
@@ -606,6 +551,7 @@ function toggleTheme() {
   const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
   applyTheme(next);
   try { localStorage.setItem(THEME_KEY, next); } catch (err) { /* private mode */ }
+  if (currentView === "analytics") renderAnalytics();
 }
 
 /* ==================================================
@@ -627,6 +573,7 @@ function setView(name) {
   });
 
   if (name === "planner") renderPlanner();
+  if (name === "analytics") renderAnalytics();
 
   try { history.replaceState(null, "", `#${name}`); } catch (err) { /* file:// */ }
   window.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
@@ -817,6 +764,7 @@ function runCommand(name) {
     case "theme": toggleTheme(); break;
     case "clear-filters": clearFilters(); break;
     case "clear-day": activeDayFilter = null; renderApp(); break;
+    case "analytics-overdue": openAnalyticsOverdue(); break;
     case "plan-prev":
     case "plan-next":
     case "plan-today": plannerGo(name); break;
@@ -895,6 +843,8 @@ async function syncToFile() {
 function toggleTaskComplete(id) {
   const task = tasks.find((t) => t.id === id);
   if (!task) return;
+  const wasCompleted = task.completed;
+  const logSnapshot = CompletionLog.snapshot(task); // before the task moves to its next occurrence
 
   if (task.recurring && !task.completed) {
     // Completing a recurring task moves it to its next matching day
@@ -917,6 +867,9 @@ function toggleTaskComplete(id) {
   } else {
     task.completed = !task.completed;
   }
+
+  if (!wasCompleted && (task.recurring || task.completed)) CompletionLog.record(logSnapshot);
+  else if (wasCompleted && !task.completed) CompletionLog.removeLatest(task.id);
 
   commit();
 }
@@ -1240,6 +1193,8 @@ function renderApp() {
   renderTasksView();
   renderBadges();
   if (currentView === "planner") renderPlanner();
+  AnalyticsEngine.invalidate();
+  if (currentView === "analytics") renderAnalytics();
 }
 
 function getFilteredTasks() {
@@ -2205,35 +2160,450 @@ function escapeHtml(str) {
 }
 
 /* ==================================================
+   SUPER ANALYTICS
+   Calculated only from the loaded `tasks` array plus a small
+   completion log (kept on this device) because tasks do not store
+   WHEN they were completed. Scheduled time = planned, never "actual".
+   Anchors: task stats use the due date; activity (streaks, heatmap,
+   completed-per-day) uses recorded completion dates.
+================================================== */
+
+const COMPLETION_LOG_KEY = "study_completion_log_v1";
+const AN_SUBJECTS = ["Mathematics", "Physics", "Chemistry", "Other"];
+const AN_PRIOS = ["High", "Medium", "Low"];
+const anFilter = { range: "30", subject: "all", from: "", to: "" };
+const anCharts = {};
+
+function anValidKey(s) {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = parseDateKey(s);
+  return !isNaN(d) && toDateKey(d) === s;
+}
+const anFmtMin = (m) => { m = Math.round(m || 0); return m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`; };
+const anPct = (v) => (v == null ? "—" : `${v.toFixed(1)}%`);
+const anRate = (d, t) => (t > 0 ? (d / t) * 100 : null);
+const anSum = (list, f) => list.reduce((s, i) => s + f(i), 0);
+const anCss = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const anSubjColor = (s) => anCss({ Mathematics: "--maths", Physics: "--phys", Chemistry: "--chem" }[s] || "--other");
+const anLongDate = (k) => parseDateKey(k).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+// One entry per completion, written when a task is ticked on this device.
+const CompletionLog = {
+  key() { return `${COMPLETION_LOG_KEY}:${currentUser ? currentUser.id : "local"}`; },
+  read() { try { const a = JSON.parse(localStorage.getItem(this.key())); return Array.isArray(a) ? a : []; } catch (e) { return []; } },
+  write(list) { try { localStorage.setItem(this.key(), JSON.stringify(list)); } catch (e) {} },
+  snapshot(t) {
+    const sched = isScheduled(t);
+    return { taskId: t.id, title: t.title, subject: t.subject, priority: t.priority, recurring: !!t.recurring, dueDate: t.dueDate,
+      scheduledDate: sched ? t.scheduledDate : null, duration: sched ? t.durationMinutes : null, date: getRelativeDate(0) };
+  },
+  record(s) { const l = this.read(); l.push(s); this.write(l); AnalyticsEngine.invalidate(); },
+  removeLatest(id) {
+    const l = this.read();
+    for (let i = l.length - 1; i >= 0; i--) if (l[i].taskId === id) { l.splice(i, 1); break; }
+    this.write(l); AnalyticsEngine.invalidate();
+  }
+};
+
+const AnalyticsEngine = {
+  _base: null,
+  _cache: new Map(),
+  invalidate() { this._base = null; this._cache.clear(); },
+
+  // Turns tasks + log into "instances": one per open task, one per completed occurrence
+  base() {
+    if (this._base) return this._base;
+    const log = CompletionLog.read().filter((e) => e && anValidKey(e.date));
+    const byTask = new Map();
+    log.forEach((e) => { if (!byTask.has(e.taskId)) byTask.set(e.taskId, []); byTask.get(e.taskId).push(e); });
+    const inst = [], created = [], live = new Set();
+    (Array.isArray(tasks) ? tasks : []).forEach((t) => {
+      if (!t || typeof t !== "object") return;
+      live.add(t.id);
+      const subject = AN_SUBJECTS.includes(t.subject) ? t.subject : "Other";
+      const priority = AN_PRIOS.includes(t.priority) ? t.priority : "Medium";
+      const sched = isScheduled(t) && anValidKey(t.scheduledDate) && t.durationMinutes > 0;
+      const mk = (o) => ({ taskId: t.id, title: t.title || "Untitled", subject, priority, recurring: !!t.recurring, ...o });
+      const evs = byTask.get(t.id) || [];
+      if (t.createdAt) { const d = new Date(t.createdAt); if (!isNaN(d)) created.push({ subject, date: toDateKey(d) }); }
+      if (t.recurring) {
+        if (!t.completed && anValidKey(t.dueDate)) inst.push(mk({ done: false, due: t.dueDate, sd: sched ? t.scheduledDate : null, dur: sched ? t.durationMinutes : null, cdate: null }));
+        evs.forEach((e) => inst.push(mk({ done: true, due: anValidKey(e.dueDate) ? e.dueDate : e.date, sd: e.scheduledDate || null, dur: e.duration || null, cdate: e.date })));
+        if (anValidKey(t.lastDone) && !evs.some((e) => e.date === t.lastDone)) inst.push(mk({ done: true, due: t.lastDone, sd: null, dur: null, cdate: t.lastDone }));
+        else if (t.completed && !evs.length && anValidKey(t.dueDate)) inst.push(mk({ done: true, due: t.dueDate, sd: null, dur: null, cdate: null }));
+      } else if (anValidKey(t.dueDate)) {
+        const e = evs[evs.length - 1];
+        inst.push(mk({ done: !!t.completed, due: t.dueDate, sd: sched ? t.scheduledDate : null, dur: sched ? t.durationMinutes : null, cdate: t.completed && e ? e.date : null }));
+      }
+    });
+    // Completed work of tasks that were later deleted stays in the history
+    log.forEach((e) => {
+      if (live.has(e.taskId)) return;
+      inst.push({ taskId: e.taskId, title: e.title || "Deleted task", subject: AN_SUBJECTS.includes(e.subject) ? e.subject : "Other",
+        priority: AN_PRIOS.includes(e.priority) ? e.priority : "Medium", recurring: !!e.recurring, done: true,
+        due: anValidKey(e.dueDate) ? e.dueDate : e.date, sd: e.scheduledDate || null, dur: e.duration || null, cdate: e.date });
+    });
+    this._base = { inst, created, undated: inst.filter((i) => i.done && !i.cdate).length,
+      firstLog: log.reduce((m, e) => (!m || e.date < m ? e.date : m), null) };
+    return this._base;
+  },
+
+  range(f) {
+    const today = getRelativeDate(0);
+    const n = { 7: 6, 30: 29, 90: 89 }[f.range];
+    if (n !== undefined) return { from: shiftDateKey(today, -n), to: today };
+    if (f.range === "year") return { from: `${today.slice(0, 4)}-01-01`, to: today };
+    if (f.range === "custom") return { from: anValidKey(f.from) ? f.from : null, to: anValidKey(f.to) ? f.to : null };
+    return { from: null, to: null };
+  },
+  inR(d, r) { return !!d && (!r.from || d >= r.from) && (!r.to || d <= r.to); },
+  prevRange(r) {
+    if (!r.from || !r.to || r.to < r.from) return null;
+    const len = daysBetween(r.from, r.to) + 1;
+    return { from: shiftDateKey(r.from, -len), to: shiftDateKey(r.from, -1) };
+  },
+  agg(items, today) {
+    const total = items.length, done = items.filter((i) => i.done).length;
+    return { total, done, pending: total - done, overdue: items.filter((i) => !i.done && i.due < today).length, rate: anRate(done, total) };
+  },
+  slice(f, r) {
+    const b = this.base(), sub = (i) => f.subject === "all" || i.subject === f.subject;
+    return {
+      items: b.inst.filter((i) => sub(i) && this.inR(i.due, r)),
+      sched: b.inst.filter((i) => sub(i) && i.sd && i.dur && this.inR(i.sd, r)),
+      comps: b.inst.filter((i) => sub(i) && i.done && i.cdate && this.inR(i.cdate, r)),
+      created: b.created.filter((c) => sub(c) && this.inR(c.date, r))
+    };
+  },
+  context(f) {
+    const today = getRelativeDate(0), range = this.range(f), pr = this.prevRange(range);
+    const all = this.base().inst.filter((i) => f.subject === "all" || i.subject === f.subject);
+    return { f, today, range, ...this.slice(f, range), prev: pr ? this.slice(f, pr) : null, all, allComps: all.filter((i) => i.done && i.cdate) };
+  },
+
+  calculateStreaks(c) {
+    const set = new Set(c.allComps.map((i) => i.cdate));
+    let best = 0, run = 0, prev = null;
+    [...set].sort().forEach((d) => { run = prev && daysBetween(prev, d) === 1 ? run + 1 : 1; best = Math.max(best, run); prev = d; });
+    let cur = 0, d = set.has(c.today) ? c.today : shiftDateKey(c.today, -1);
+    while (set.has(d)) { cur++; d = shiftDateKey(d, -1); }
+    return { current: cur, best, set };
+  },
+
+  calculateTrends(a, p, sm, pm) {
+    const none = { dir: "none", text: "No previous-period data" };
+    if (!p || p.total === 0) return { rate: none, total: none, done: none, sched: none };
+    const mk = (d, unit) => (Math.abs(d) < 0.05 ? { dir: "flat", text: "→ stable vs previous period" }
+      : { dir: d > 0 ? "up" : "down", text: `${d > 0 ? "↑" : "↓"} ${Math.abs(d).toFixed(1)}${unit} vs previous period` });
+    const pts = (x, y) => (x == null || y == null ? none : mk(x - y, " pts"));
+    const rel = (x, y) => (!y ? none : mk(((x - y) / y) * 100, "%"));
+    return { rate: pts(a.rate, p.rate), total: rel(a.total, p.total), done: rel(a.done, p.done), sched: rel(sm, pm) };
+  },
+
+  calculateOverview(c) {
+    const a = this.agg(c.items, c.today), p = c.prev ? this.agg(c.prev.items, c.today) : null;
+    const schedMin = anSum(c.sched, (i) => i.dur), pMin = c.prev ? anSum(c.prev.sched, (i) => i.dur) : null;
+    const st = this.calculateStreaks(c);
+    const act = new Set(c.comps.map((i) => i.cdate));
+    const from = c.range.from || [...act].sort()[0] || null;
+    const to = c.range.to && c.range.to < c.today ? c.range.to : c.today;
+    const n = from && from <= to ? daysBetween(from, to) + 1 : 0;
+    return { ...a, schedMin, streak: st, activeDays: act.size, inactiveDays: n ? Math.max(0, n - act.size) : null,
+      trends: this.calculateTrends(a, p, schedMin, pMin) };
+  },
+
+  calculateSubjectStats(c) {
+    const subs = c.f.subject === "all" ? AN_SUBJECTS : [c.f.subject];
+    return subs.map((s) => {
+      const it = c.items.filter((i) => i.subject === s), sc = c.sched.filter((i) => i.subject === s), a = this.agg(it, c.today);
+      const pit = c.prev ? c.prev.items.filter((i) => i.subject === s) : [];
+      const pa = pit.length ? this.agg(pit, c.today) : null, pm = anSum(sc, (i) => i.dur);
+      return { subject: s, ...a, plannedMin: pm, avgDur: sc.length ? pm / sc.length : null,
+        trend: pa && a.rate != null && pa.rate != null ? a.rate - pa.rate : null };
+    });
+  },
+
+  calculatePriorityStats(c) {
+    return AN_PRIOS.map((p) => {
+      const sc = c.sched.filter((i) => i.priority === p);
+      return { priority: p, ...this.agg(c.items.filter((i) => i.priority === p), c.today), plannedMin: anSum(sc, (i) => i.dur) };
+    });
+  },
+
+  calculateDailyStats(c) {
+    const dates = [...c.items.map((i) => i.due), ...c.comps.map((i) => i.cdate), ...c.created.map((i) => i.date)].sort();
+    const from = c.range.from || dates[0];
+    const to = c.range.to && c.range.to < c.today ? c.range.to : c.today;
+    if (!from || from > to) return null;
+    const n = daysBetween(from, to) + 1, unit = n <= 31 ? "day" : n <= 400 ? "week" : "month";
+    const key = (d) => (unit === "day" ? d : unit === "week" ? mondayKeyOf(parseDateKey(d)) : `${d.slice(0, 7)}-01`);
+    const keys = [], seen = new Set();
+    for (let d = from; d <= to; d = shiftDateKey(d, 1)) { const k = key(d); if (!seen.has(k)) { seen.add(k); keys.push(k); } }
+    const mk = () => Object.fromEntries(keys.map((k) => [k, 0]));
+    const cr = mk(), co = mk(), tot = mk(), dn = mk();
+    c.created.forEach((i) => { const k = key(i.date); if (k in cr) cr[k]++; });
+    c.comps.forEach((i) => { const k = key(i.cdate); if (k in co) co[k]++; });
+    c.items.forEach((i) => { if (i.due > to) return; const k = key(i.due); if (k in tot) { tot[k]++; if (i.done) dn[k]++; } });
+    const label = (k) => (unit === "month" ? parseDateKey(k).toLocaleDateString("en-US", { month: "short", year: "2-digit" })
+      : `${unit === "week" ? "Wk " : ""}${parseDateKey(k).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`);
+    const hasData = keys.some((k) => cr[k] || co[k] || tot[k]);
+    return hasData ? { unit, labels: keys.map(label), created: keys.map((k) => cr[k]), completed: keys.map((k) => co[k]),
+      rate: keys.map((k) => (tot[k] ? (dn[k] / tot[k]) * 100 : null)) } : null;
+  },
+
+  calculatePlannerStats(c) {
+    const s = c.sched, done = s.filter((i) => i.done).length;
+    const wk = {};
+    s.forEach((i) => { const k = mondayKeyOf(parseDateKey(i.sd)); wk[k] = (wk[k] || 0) + i.dur; });
+    return { planned: s.length, done, remaining: s.length - done, rate: anRate(done, s.length), minutes: anSum(s, (i) => i.dur),
+      bySubject: AN_SUBJECTS.map((x) => ({ subject: x, min: anSum(s.filter((i) => i.subject === x), (i) => i.dur) })),
+      byDay: [1, 2, 3, 4, 5, 6, 0].map((d) => ({ day: d, min: anSum(s.filter((i) => parseDateKey(i.sd).getDay() === d), (i) => i.dur) })),
+      byWeek: Object.keys(wk).sort().slice(-8).map((k) => ({ week: k, min: wk[k] })),
+      avg: s.length ? anSum(s, (i) => i.dur) / s.length : null,
+      longest: s.reduce((m, i) => (!m || i.dur > m.dur ? i : m), null),
+      shortest: s.reduce((m, i) => (!m || i.dur < m.dur ? i : m), null) };
+  },
+
+  calculateTaskStats(c) {
+    const grp = (list) => ({ ...this.agg(list, c.today) });
+    const rec = c.items.filter((i) => i.recurring), per = {};
+    rec.forEach((i) => { (per[i.taskId] = per[i.taskId] || { title: i.title, t: 0, d: 0 }).t++; if (i.done) per[i.taskId].d++; });
+    const ranked = Object.values(per).filter((x) => x.t >= 3).map((x) => ({ title: x.title, rate: (x.d / x.t) * 100, n: x.t })).sort((a, b) => b.rate - a.rate);
+    return { normal: grp(c.items.filter((i) => !i.recurring)), recurring: grp(rec), scheduled: grp(c.items.filter((i) => i.sd)),
+      templates: (Array.isArray(tasks) ? tasks : []).filter((t) => t && t.recurring && (c.f.subject === "all" || t.subject === c.f.subject)).length,
+      best: ranked[0] || null, worst: ranked.length > 1 ? ranked[ranked.length - 1] : null };
+  },
+
+  window(f, from, to) {
+    const s = this.slice(f, { from, to }), a = this.agg(s.items, getRelativeDate(0)), pd = s.sched.filter((i) => i.done).length;
+    return { created: s.created.length, completed: s.comps.length, ...a, planned: s.sched.length, plannedDone: pd,
+      plannedMin: anSum(s.sched, (i) => i.dur), exec: anRate(pd, s.sched.length) };
+  },
+
+  calculateWeeklyStats(f) {
+    const today = getRelativeDate(0), mon = mondayKeyOf(new Date()), el = daysBetween(mon, today), lm = shiftDateKey(mon, -7);
+    return { cur: this.window(f, mon, today), prev: this.window(f, lm, shiftDateKey(lm, el)), days: el + 1 };
+  },
+
+  calculateMonthlyStats(f) {
+    const now = new Date(), today = getRelativeDate(0), out = [];
+    for (let i = 5; i >= 0; i--) {
+      const first = new Date(now.getFullYear(), now.getMonth() - i, 1), last = new Date(now.getFullYear(), now.getMonth() - i + 1, 0);
+      const to = toDateKey(last) > today ? today : toDateKey(last);
+      out.push({ label: first.toLocaleDateString("en-US", { month: "short" }), ...this.window(f, toDateKey(first), to) });
+    }
+    return out;
+  },
+
+  calculateDayStats(c) {
+    const cnt = Array(7).fill(0), min = Array(7).fill(0);
+    c.comps.forEach((i) => cnt[parseDateKey(i.cdate).getDay()]++);
+    c.sched.forEach((i) => { min[parseDateKey(i.sd).getDay()] += i.dur; });
+    const ok = c.comps.length >= 7, ord = [1, 2, 3, 4, 5, 6, 0];
+    const pick = (arr, cmp) => ord.reduce((m, d) => (m === null || cmp(arr[d], arr[m]) ? d : m), null);
+    return { best: ok ? pick(cnt, (a, b) => a > b) : null, low: ok ? pick(cnt, (a, b) => a < b) : null,
+      sched: anSum(c.sched, (i) => i.dur) > 0 ? pick(min, (a, b) => a > b) : null, cnt, min };
+  },
+
+  calculateRecords(c) {
+    const st = this.calculateStreaks(c), per = {}, wk = {}, mo = {}, subj = {}, sday = {}, wi = {};
+    c.allComps.forEach((i) => {
+      per[i.cdate] = (per[i.cdate] || 0) + 1;
+      const w = mondayKeyOf(parseDateKey(i.cdate)); wk[w] = (wk[w] || 0) + 1;
+      const m = i.cdate.slice(0, 7); mo[m] = (mo[m] || 0) + 1;
+      subj[i.subject] = (subj[i.subject] || 0) + 1;
+    });
+    c.all.forEach((i) => { if (i.sd && i.dur) sday[i.sd] = (sday[i.sd] || 0) + i.dur; const w = mondayKeyOf(parseDateKey(i.due)); (wi[w] = wi[w] || { t: 0, d: 0 }).t++; if (i.done) wi[w].d++; });
+    const top = (o) => Object.entries(o).sort((a, b) => b[1] - a[1])[0] || null;
+    const wr = Object.entries(wi).filter(([, v]) => v.t >= 5).map(([k, v]) => [k, (v.d / v.t) * 100]).sort((a, b) => b[1] - a[1])[0] || null;
+    return { streak: st.best, day: top(per), sched: top(sday), week: top(wk), month: top(mo), subject: top(subj), weekRate: wr };
+  },
+
+  calculateHeat(c) {
+    const counts = {};
+    c.allComps.forEach((i) => { counts[i.cdate] = (counts[i.cdate] || 0) + 1; });
+    const end = c.range.to && c.range.to < c.today ? c.range.to : c.today;
+    let start = c.range.from || shiftDateKey(end, -181);
+    const span = daysBetween(start, end) + 1;
+    if (span < 84) start = shiftDateKey(end, -83); else if (span > 371) start = shiftDateKey(end, -370);
+    const cells = [];
+    for (let d = mondayKeyOf(parseDateKey(start)); d <= end; d = shiftDateKey(d, 1)) {
+      cells.push({ d, n: counts[d] || 0, out: (c.range.from && d < c.range.from) || d < start });
+    }
+    return { cells, max: Math.max(0, ...cells.filter((x) => !x.out).map((x) => x.n)), from: start, to: end };
+  },
+
+  generateInsights(r) {
+    const out = [], o = r.overview, w = r.weekly, add = (cls, icon, text) => out.push({ cls, icon, text });
+    if (w.prev.completed > 0) {
+      const d = ((w.cur.completed - w.prev.completed) / w.prev.completed) * 100;
+      if (Math.abs(d) >= 1) add(d > 0 ? "good" : "warn", d > 0 ? "🔥" : "⚠️", `You completed ${Math.abs(d).toFixed(0)}% ${d > 0 ? "more" : "fewer"} tasks than on the same days last week.`);
+    }
+    const ranked = r.subjects.filter((s) => s.total >= 5 && s.rate != null).sort((a, b) => a.rate - b.rate);
+    if (ranked.length > 1 && ranked[0].rate < ranked[ranked.length - 1].rate) add("warn", "⚠️", `${ranked[0].subject} has the lowest completion rate among your subjects (${anPct(ranked[0].rate)}).`);
+    if (r.days.sched !== null) add("info", "📅", `${getDayName(r.days.sched)} has the highest scheduled workload (${anFmtMin(r.days.min[r.days.sched])}).`);
+    if (o.overdue > 0) add("warn", "⚠️", `You have ${o.overdue} overdue task${o.overdue === 1 ? "" : "s"} in this period.`);
+    else if (o.total > 0) add("good", "✅", "No overdue tasks in this period.");
+    if (o.streak.current >= 3) add("good", "🔥", `You have maintained a ${o.streak.current}-day completion streak.`);
+    const hi = r.priority[0], lo = r.priority[2];
+    if (hi.total >= 5 && lo.total >= 5 && lo.rate - hi.rate >= 10) add("warn", "⚠️", `High-priority tasks are completed less often (${anPct(hi.rate)}) than low-priority ones (${anPct(lo.rate)}).`);
+    if (r.planner.planned >= 5 && r.planner.rate < 60) add("warn", "📅", `Only ${anPct(r.planner.rate)} of your scheduled tasks are completed.`);
+    return out;
+  },
+
+  compute(f) {
+    const key = JSON.stringify(f);
+    if (this._cache.has(key)) return this._cache.get(key);
+    const c = this.context(f);
+    const res = { c, overview: this.calculateOverview(c), subjects: this.calculateSubjectStats(c), priority: this.calculatePriorityStats(c),
+      daily: this.calculateDailyStats(c), tasks: this.calculateTaskStats(c), planner: this.calculatePlannerStats(c),
+      weekly: this.calculateWeeklyStats(f), monthly: this.calculateMonthlyStats(f), days: this.calculateDayStats(c),
+      records: this.calculateRecords(c), heat: this.calculateHeat(c), base: this.base() };
+    res.insights = this.generateInsights(res);
+    this._cache.set(key, res);
+    return res;
+  }
+};
+
+/* ---------- Rendering ---------- */
+
+function anTrendHTML(t) { return `<span class="an-trend an-${t.dir}">${escapeHtml(t.text)}</span>`; }
+function anCard(label, value, sub, cls = "") { return `<div class="an-card ${cls}"><span class="an-label">${label}</span><strong class="an-value">${value}</strong><span class="an-sub">${sub || ""}</span></div>`; }
+function anPanel(title, body, extra = "") { return `<section class="panel an-panel ${extra}"><h2 class="panel-title">${title}</h2>${body}</section>`; }
+function anChartBox(id, ok) { return ok ? `<div class="an-chart"><canvas id="${id}"></canvas></div>` : '<p class="an-empty">Not enough data yet</p>'; }
+function anRow(label, value) { return `<div class="an-row"><span>${label}</span><strong>${value}</strong></div>`; }
+
+function anDraw(id, cfg) {
+  const el = $(id);
+  if (!el) return;
+  if (typeof Chart === "undefined") { el.parentElement.innerHTML = '<p class="an-empty">Charts unavailable (Chart.js did not load).</p>'; return; }
+  const ink = anCss("--ink-3"), line = anCss("--line");
+  cfg.options = { responsive: true, maintainAspectRatio: false, ...(cfg.options || {}) };
+  cfg.options.plugins = { legend: { display: (cfg.data.datasets || []).length > 1, labels: { color: anCss("--ink-2"), boxWidth: 12 } }, ...(cfg.options.plugins || {}) };
+  const sc = cfg.options.scales || {};
+  Object.keys(sc).forEach((k) => { sc[k].ticks = { color: ink, ...(sc[k].ticks || {}) }; sc[k].grid = { color: line, ...(sc[k].grid || {}) }; });
+  anCharts[id] = new Chart(el, cfg);
+}
+
+function renderAnalytics() {
+  const root = $("an-root");
+  if (!root) return;
+  Object.keys(anCharts).forEach((k) => { try { anCharts[k].destroy(); } catch (e) {} delete anCharts[k]; });
+  const r = AnalyticsEngine.compute(anFilter), o = r.overview, tk = r.tasks, pl = r.planner, wk = r.weekly, noData = !r.c.items.length && !r.c.comps.length;
+  const subjLabel = anFilter.subject === "all" ? "" : ` ${anFilter.subject}`;
+
+  if (noData && !r.c.sched.length) {
+    root.innerHTML = `<div class="panel an-panel an-bigempty"><i class="fa-solid fa-chart-line"></i><h2>${anFilter.subject === "all" ? "No analytics available yet." : `No ${escapeHtml(anFilter.subject)} data available for this period.`}</h2><p>${anFilter.subject === "all" ? "Complete a few tasks to start building your Study Board analytics." : "Try another date range or subject."}</p></div>`;
+    return;
+  }
+  const t = o.trends, ed = (v) => (v == null ? "Not enough data" : v);
+  let h = '<div class="an-cards">';
+  h += anCard("Total tasks", o.total, anTrendHTML(t.total));
+  h += anCard("Completed", o.done, anTrendHTML(t.done), "is-ok");
+  h += anCard("Completion rate", anPct(o.rate), anTrendHTML(t.rate));
+  h += anCard("Pending", o.pending, "in this period");
+  h += anCard("Overdue", o.overdue, "in this period", o.overdue ? "is-late" : "");
+  h += anCard("Scheduled time", o.schedMin ? anFmtMin(o.schedMin) : "—", o.schedMin ? anTrendHTML(t.sched) : "Nothing scheduled");
+  h += anCard("Current streak", `${o.streak.current}d`, `Best ${o.streak.best}d · from recorded completions`);
+  h += anCard("Active days", o.activeDays, o.inactiveDays == null ? "" : `${o.inactiveDays} inactive`);
+  h += "</div>";
+
+  const notes = [];
+  if (r.base.undated) notes.push(`${r.base.undated} completed task${r.base.undated === 1 ? " has" : "s have"} no recorded completion date, so ${r.base.undated === 1 ? "it is" : "they are"} left out of streaks, the heatmap and completed-per-day charts.`);
+  notes.push(r.base.firstLog ? `Completion dates are recorded on this device from ${anLongDate(r.base.firstLog)}. Older completions only appear if a recurring task's last-done date is known.` : "Completion dates are recorded on this device from your next completed task onward.");
+  notes.push("“Created” uses each task's cloud creation date. Scheduled time is planned time, not tracked study time.");
+  h += `<p class="an-note"><i class="fa-solid fa-circle-info"></i> ${notes.map(escapeHtml).join(" ")}</p>`;
+
+  h += `<div class="an-cols">${anPanel(`Daily task activity${subjLabel ? " ·" + escapeHtml(subjLabel) : ""}`, anChartBox("an-c-daily", r.daily))}${anPanel("Completion trend", anChartBox("an-c-rate", r.daily && r.daily.rate.some((v) => v != null)))}</div>`;
+
+  h += anPanel("Subject analytics", `<div class="an-subjects">${r.subjects.map((s) => s.total === 0 && !s.plannedMin
+    ? `<div class="an-subj ${subjectClass(s.subject)}"><h3>${escapeHtml(s.subject)}</h3><p class="an-empty">No ${escapeHtml(s.subject)} data available for this period.</p></div>`
+    : `<div class="an-subj ${subjectClass(s.subject)}"><h3>${escapeHtml(s.subject)}</h3>${anRow("Completion", anPct(s.rate))}${anRow("Tasks", s.total)}${anRow("Completed", s.done)}${anRow("Pending", s.pending)}${anRow("Overdue", s.overdue)}${anRow("Planned time", s.plannedMin ? anFmtMin(s.plannedMin) : "—")}${anRow("Avg scheduled duration", s.avgDur ? anFmtMin(s.avgDur) : "—")}${anRow("Trend", s.trend == null ? "No previous-period data" : `${s.trend > 0 ? "↑" : s.trend < 0 ? "↓" : "→"} ${Math.abs(s.trend).toFixed(1)} pts`)}</div>`).join("")}</div>`);
+
+  h += `<div class="an-cols">${anPanel("Subject completion rate", anChartBox("an-c-subj", r.subjects.some((s) => s.rate != null)))}${anPanel("Planned time by subject", anChartBox("an-c-plan", pl.minutes > 0))}</div>`;
+
+  h += `<div class="an-cols">${anPanel("Planner execution", pl.planned ? `<div class="an-big">${anPct(pl.rate)}</div><p class="an-sub">of scheduled tasks completed (schedule completion, not study time)</p>${anRow("Planned tasks", pl.planned)}${anRow("Completed", pl.done)}${anRow("Remaining", pl.remaining)}${anRow("Total planned time", anFmtMin(pl.minutes))}${anRow("Average task duration", anFmtMin(pl.avg))}${anRow("Longest", pl.longest ? `${escapeHtml(pl.longest.title)} · ${pl.longest.dur} min` : "—")}${anRow("Shortest", pl.shortest ? `${escapeHtml(pl.shortest.title)} · ${pl.shortest.dur} min` : "—")}${anRow("Planned by weekday", pl.byDay.filter((x) => x.min).map((x) => `${DAY_SHORT[x.day]} ${anFmtMin(x.min)}`).join(" · ") || "—")}${anRow("Planned by week", pl.byWeek.map((x) => `${formatDayShort(x.week).replace(/^\w+ /, "")}: ${anFmtMin(x.min)}`).join(" · ") || "—")}` : '<p class="an-empty">Not enough data yet</p>')}`
+    + anPanel("Priority analytics", `${anChartBox("an-c-prio", r.priority.some((p) => p.rate != null))}<div class="an-mini">${r.priority.map((p) => `<div><strong>${p.priority}</strong><span>${p.total} tasks · ${p.done} done · ${p.pending} pending · ${p.overdue} overdue</span></div>`).join("")}</div>`) + "</div>";
+
+  const oi = r.c.items.filter((i) => !i.done && i.due < r.c.today).sort((a, b) => a.due.localeCompare(b.due));
+  const thisMon = mondayKeyOf(new Date());
+  h += anPanel("Overdue tasks", `<div class="an-cols an-tight"><div class="an-card ${oi.length ? "is-late" : ""}"><span class="an-label">Overdue</span><strong class="an-value">${oi.length}</strong><span class="an-sub">${oi.filter((i) => i.due >= thisMon).length} due this week</span></div><div>${AN_SUBJECTS.map((s) => anRow(s, oi.filter((i) => i.subject === s).length)).join("")}${AN_PRIOS.map((p) => anRow(`${p} priority`, oi.filter((i) => i.priority === p).length)).join("")}${anRow("Oldest", oi[0] ? `${escapeHtml(oi[0].title)} · ${daysBetween(oi[0].due, r.c.today)}d late` : "—")}</div></div>${oi.length ? '<button type="button" class="btn btn-secondary" data-cmd="analytics-overdue"><i class="fa-solid fa-list-check"></i> Open pending tasks</button>' : ""}`);
+
+  const cmp = (a, b, pct) => `${pct ? anPct(a) : a} <span class="an-sub">vs ${pct ? anPct(b) : b} last week</span>`;
+  h += `<div class="an-cols">${anPanel(`This week so far (${wk.days} day${wk.days === 1 ? "" : "s"}) vs same days last week`, anRow("Tasks created", cmp(wk.cur.created, wk.prev.created)) + anRow("Tasks completed", cmp(wk.cur.completed, wk.prev.completed)) + anRow("Completion rate", cmp(wk.cur.rate, wk.prev.rate, true)) + anRow("Planned time", `${anFmtMin(wk.cur.plannedMin)} <span class="an-sub">vs ${anFmtMin(wk.prev.plannedMin)}</span>`) + anRow("Scheduled · completed", `${wk.cur.planned} · ${wk.cur.plannedDone}`) + anRow("Execution rate", cmp(wk.cur.exec, wk.prev.exec, true)))}${anPanel("Monthly performance", anChartBox("an-c-month", r.monthly.some((m) => m.total || m.completed)) + `<div class="an-mini">${(() => { const m = r.monthly[r.monthly.length - 1]; return `<div><strong>This month</strong><span>${m.completed} completed · ${anPct(m.rate)} · ${anFmtMin(m.plannedMin)} planned · ${m.overdue} overdue</span></div>`; })()}</div>`)}</div>`;
+
+  h += `<div class="an-cols">${anPanel("Task types", `${anRow("Normal tasks", `${tk.normal.total} · ${anPct(tk.normal.rate)}`)}${anRow("Recurring tasks", `${tk.recurring.total} · ${anPct(tk.recurring.rate)}`)}${anRow("Scheduled tasks", `${tk.scheduled.total} · ${anPct(tk.scheduled.rate)}`)}`)}`
+    + anPanel("Recurring task performance", tk.recurring.total ? `${anRow("Recurring templates", tk.templates)}${anRow("Completed occurrences", tk.recurring.done)}${anRow("Pending occurrences", tk.recurring.pending)}${anRow("Completion rate", anPct(tk.recurring.rate))}${anRow("Most reliable", tk.best ? `${escapeHtml(tk.best.title)} · ${anPct(tk.best.rate)}` : "Not enough data")}${anRow("Least reliable", tk.worst ? `${escapeHtml(tk.worst.title)} · ${anPct(tk.worst.rate)}` : "Not enough data")}` : '<p class="an-empty">Not enough data yet</p>') + "</div>";
+
+  const hm = r.heat, lvl = (n) => (!n ? 0 : Math.min(4, Math.ceil((n / hm.max) * 4)));
+  h += anPanel("Activity heatmap", hm.max ? `<div class="an-heat" role="img" aria-label="Completed tasks per day">${hm.cells.map((x) => x.out ? '<span class="an-cell out"></span>' : `<span class="an-cell l${lvl(x.n)}" title="${anLongDate(x.d)}: ${x.n} task${x.n === 1 ? "" : "s"} completed"></span>`).join("")}</div><div class="an-legend">Less <span class="an-cell l0"></span><span class="an-cell l1"></span><span class="an-cell l2"></span><span class="an-cell l3"></span><span class="an-cell l4"></span> More · ${anLongDate(hm.from)} – ${anLongDate(hm.to)}</div>` : '<p class="an-empty">Not enough data yet</p>');
+
+  const dy = r.days, nm = (d, a, u) => (d === null ? "Not enough data" : `${getDayName(d)} — ${a[d]}${u}`);
+  h += anPanel("Best and lowest days", anRow("🔥 Most productive day", nm(dy.best, dy.cnt, " completed")) + anRow("📉 Lowest activity", nm(dy.low, dy.cnt, " completed")) + anRow("📅 Most scheduled day", dy.sched === null ? "Not enough data" : `${getDayName(dy.sched)} — ${anFmtMin(dy.min[dy.sched])}`));
+
+  h += anPanel("Automatic insights", r.insights.length ? `<ul class="an-insights">${r.insights.map((i) => `<li class="an-ins an-${i.cls}"><span>${i.icon}</span>${escapeHtml(i.text)}</li>`).join("")}</ul>` : '<p class="an-empty">Not enough data yet</p>');
+
+  const rc = r.records, rows = [];
+  if (rc.streak) rows.push(["Longest streak", `${rc.streak} days`]);
+  if (rc.day) rows.push(["Most completed in one day", `${rc.day[1]} · ${anLongDate(rc.day[0])}`]);
+  if (rc.sched) rows.push(["Most scheduled time in one day", `${anFmtMin(rc.sched[1])} · ${anLongDate(rc.sched[0])}`]);
+  if (rc.weekRate) rows.push(["Highest weekly completion rate", `${anPct(rc.weekRate[1])} · week of ${anLongDate(rc.weekRate[0])}`]);
+  if (rc.week) rows.push(["Most productive week", `${rc.week[1]} completed · week of ${anLongDate(rc.week[0])}`]);
+  if (rc.month) rows.push(["Most productive month", `${rc.month[1]} completed · ${parseDateKey(`${rc.month[0]}-01`).toLocaleDateString("en-US", { month: "long", year: "numeric" })}`]);
+  if (rc.subject) rows.push(["Subject with most completions", `${escapeHtml(rc.subject[0])} · ${rc.subject[1]}`]);
+  h += anPanel("Personal records", rows.length ? rows.map((x) => anRow(x[0], x[1])).join("") : '<p class="an-empty">Not enough data yet</p>');
+
+  root.innerHTML = h;
+
+  const sc = (extra = {}) => ({ x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true } }, y: { beginAtZero: true, ...extra } });
+  if (r.daily) {
+    anDraw("an-c-daily", { type: "bar", data: { labels: r.daily.labels, datasets: [{ label: "Created", data: r.daily.created, backgroundColor: anCss("--maths") }, { label: "Completed", data: r.daily.completed, backgroundColor: anCss("--ok") }] }, options: { scales: sc({ ticks: { precision: 0 } }) } });
+    anDraw("an-c-rate", { type: "line", data: { labels: r.daily.labels, datasets: [{ label: "Completion %", data: r.daily.rate, borderColor: anCss("--focus"), backgroundColor: anCss("--focus"), spanGaps: true, tension: 0.25 }] }, options: { scales: sc({ max: 100, ticks: { callback: (v) => `${v}%` } }) } });
+  }
+  anDraw("an-c-subj", { type: "bar", data: { labels: r.subjects.map((s) => s.subject), datasets: [{ data: r.subjects.map((s) => (s.rate == null ? 0 : +s.rate.toFixed(1))), backgroundColor: r.subjects.map((s) => anSubjColor(s.subject)) }] }, options: { indexAxis: "y", scales: { x: { beginAtZero: true, max: 100, ticks: { callback: (v) => `${v}%` } }, y: { grid: { display: false } } } } });
+  anDraw("an-c-plan", { type: "bar", data: { labels: pl.bySubject.map((s) => s.subject), datasets: [{ data: pl.bySubject.map((s) => +(s.min / 60).toFixed(2)), backgroundColor: pl.bySubject.map((s) => anSubjColor(s.subject)) }] }, options: { indexAxis: "y", scales: { x: { beginAtZero: true, ticks: { callback: (v) => `${v}h` } }, y: { grid: { display: false } } } } });
+  anDraw("an-c-prio", { type: "bar", data: { labels: r.priority.map((p) => p.priority), datasets: [{ data: r.priority.map((p) => (p.rate == null ? 0 : +p.rate.toFixed(1))), backgroundColor: [anCss("--danger"), anCss("--warn"), anCss("--ok")] }] }, options: { scales: sc({ max: 100, ticks: { callback: (v) => `${v}%` } }) } });
+  anDraw("an-c-month", { data: { labels: r.monthly.map((m) => m.label), datasets: [{ type: "bar", label: "Completed", data: r.monthly.map((m) => m.completed), backgroundColor: anCss("--ok"), yAxisID: "y" }, { type: "line", label: "Completion %", data: r.monthly.map((m) => (m.rate == null ? null : +m.rate.toFixed(1))), borderColor: anCss("--focus"), backgroundColor: anCss("--focus"), spanGaps: true, yAxisID: "y1" }] }, options: { scales: { x: { grid: { display: false } }, y: { beginAtZero: true, ticks: { precision: 0 } }, y1: { position: "right", min: 0, max: 100, grid: { display: false }, ticks: { callback: (v) => `${v}%` } } } } });
+}
+
+function openAnalyticsOverdue() {
+  if (anFilter.subject !== "all") subjectFilter.value = anFilter.subject; else subjectFilter.value = "all";
+  priorityFilter.value = "all"; searchInput.value = ""; sortSelect.value = "dueDate-asc"; activeDayFilter = null;
+  setTab("pending");
+  renderApp();
+  setView("tasks");
+}
+
+function setupAnalyticsEvents() {
+  const sync = () => {
+    anFilter.range = $("an-range").value; anFilter.subject = $("an-subject").value;
+    anFilter.from = $("an-from").value; anFilter.to = $("an-to").value;
+    $("an-custom").classList.toggle("hidden", anFilter.range !== "custom");
+    renderAnalytics();
+  };
+  ["an-range", "an-subject", "an-from", "an-to"].forEach((id) => $(id).addEventListener("change", sync));
+  $("an-range").value = anFilter.range;
+}
+
+/* ==================================================
    START
 ================================================== */
 
 applyTheme(document.documentElement.getAttribute("data-theme") || "light");
 setupEventListeners();
 setupPlannerEvents();
+setupAnalyticsEvents();
 setView(VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home");
 tasks = [];
 renderApp();
 
 (async function startApp() {
-  // Never leave the page waiting forever for an authentication/network call.
-  try {
-    const result = await Promise.race([
-      supabaseClient.auth.getSession(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Authentication request timed out")), 10000))
-    ]);
-    const session = result?.data?.session || null;
-    if (session) {
-      await initializeAuthenticatedApp(session);
-    } else {
-      showLogin();
-    }
-  } catch (err) {
-    console.warn("Supabase startup unavailable:", err);
-    // The app can still open its sign-in screen instead of appearing frozen.
-    showLogin("Cloud connection timed out. Check your internet connection and try again.");
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (session) {
+    await initializeAuthenticatedApp(session);
+  } else {
+    showLogin();
   }
-
   supabaseClient.auth.onAuthStateChange(async (_event, session) => {
     if (session && !currentUser) await initializeAuthenticatedApp(session);
     else if (!session && currentUser) handleSignOut();

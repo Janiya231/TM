@@ -26,6 +26,7 @@
   />
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <link
     rel="stylesheet"
     href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
@@ -76,6 +77,10 @@
         </button>
         <button type="button" class="nav-item" data-go="tasks" title="Tasks">
           <i class="fa-solid fa-list-check"></i><span class="nav-text">Tasks</span>
+        </button>
+
+        <button type="button" class="nav-item" data-go="analytics" title="Super Analytics">
+          <i class="fa-solid fa-chart-line"></i><span class="nav-text">Super Analytics</span>
         </button>
 
         <div class="nav-divider"></div>
@@ -304,6 +309,42 @@
           </section>
         </section>
 
+        <!-- SUPER ANALYTICS -->
+        <section class="view" id="view-analytics" data-view="analytics" aria-labelledby="analytics-title">
+          <header class="view-head">
+            <div class="view-head-text">
+              <h1 class="view-title" id="analytics-title">Super Analytics</h1>
+              <p class="lede">Calculated from your real tasks and planner. Scheduled time is planned time, not tracked study time.</p>
+            </div>
+          </header>
+          <div class="an-filters">
+            <label class="field"><span>Date range</span>
+              <select id="an-range" class="input">
+                <option value="7">Last 7 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="year">This year</option>
+                <option value="all">All time</option>
+                <option value="custom">Custom range</option>
+              </select>
+            </label>
+            <label class="field"><span>Subject</span>
+              <select id="an-subject" class="input">
+                <option value="all">All subjects</option>
+                <option value="Mathematics">Mathematics</option>
+                <option value="Physics">Physics</option>
+                <option value="Chemistry">Chemistry</option>
+                <option value="Other">Other</option>
+              </select>
+            </label>
+            <div id="an-custom" class="an-custom hidden">
+              <label class="field"><span>From</span><input type="date" id="an-from" class="input" /></label>
+              <label class="field"><span>To</span><input type="date" id="an-to" class="input" /></label>
+            </div>
+          </div>
+          <div id="an-root"></div>
+        </section>
+
       </div>
     </main>
   </div>
@@ -341,6 +382,10 @@
         <button type="button" class="sheet-item" data-go="planner">
           <span class="sheet-icon"><i class="fa-solid fa-calendar-week"></i></span>
           <span class="sheet-text"><strong>Weekly planner</strong><span>Drag tasks onto days and times</span></span>
+        </button>
+        <button type="button" class="sheet-item" data-go="analytics">
+          <span class="sheet-icon"><i class="fa-solid fa-chart-line"></i></span>
+          <span class="sheet-text"><strong>Super Analytics</strong><span>Completion, planner and streak analytics</span></span>
         </button>
         <button type="button" class="sheet-item" data-cmd="add-repeating">
           <span class="sheet-icon"><i class="fa-solid fa-arrows-rotate"></i></span>
