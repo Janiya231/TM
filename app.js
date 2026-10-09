@@ -81,6 +81,31 @@ async function signUp() {
 passwordForm.addEventListener("submit", signIn);
 signupBtn.addEventListener("click", signUp);
 
+function installTelegramConnectPanel() {
+  if (document.getElementById('telegram-connect-panel')) return;
+  const panel = document.createElement('section');
+  panel.id = 'telegram-connect-panel';
+  panel.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:9999;background:var(--surface, #fff);color:var(--text, #172033);border:1px solid var(--border, #d6dbe5);border-radius:14px;padding:14px;box-shadow:0 8px 30px #0002;width:min(330px,calc(100vw - 32px));font:14px/1.45 system-ui,sans-serif';
+  panel.innerHTML = '<strong>Telegram Bot</strong><p style="margin:6px 0 10px">Connect your Telegram chat to this Study Board account.</p><button id="telegram-generate-code" type="button" style="padding:9px 12px;border:0;border-radius:8px;background:#2877d4;color:white;font-weight:700;cursor:pointer">Generate pairing code</button><p id="telegram-pair-result" role="status" style="margin:8px 0 0;overflow-wrap:anywhere"></p><button id="telegram-panel-close" type="button" aria-label="Close Telegram panel" style="position:absolute;right:9px;top:7px;border:0;background:transparent;cursor:pointer;font-size:18px">×</button>';
+  document.body.appendChild(panel);
+  document.getElementById('telegram-panel-close').addEventListener('click', () => panel.remove());
+  document.getElementById('telegram-generate-code').addEventListener('click', async () => {
+    const button = document.getElementById('telegram-generate-code');
+    const result = document.getElementById('telegram-pair-result');
+    button.disabled = true; result.textContent = 'Generating secure code…';
+    try {
+      const { data: sessionData } = await supabaseClient.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error('Please sign in again.');
+      const response = await fetch('/api/telegram-link-code', { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not generate code.');
+      result.innerHTML = `Your code: <strong style="font-size:22px;letter-spacing:3px">${data.code}</strong><br>In Telegram, send <code>/link ${data.code}</code> to your bot within 10 minutes. Treat this code as private.`;
+    } catch (error) { result.textContent = error.message || 'Could not generate pairing code.'; }
+    finally { button.disabled = false; }
+  });
+}
+
 async function initializeAuthenticatedApp(session) {
   currentUser = session.user;
   authReady = true;
@@ -89,6 +114,7 @@ async function initializeAuthenticatedApp(session) {
   passwordError.textContent = "";
   setAuthBusy(false);
   lockHelp.textContent = `Signed in as ${currentUser.email}`;
+  installTelegramConnectPanel();
   await loadTasksFromCloud();
   setupRealtimeSync();
   renderApp();
@@ -97,6 +123,7 @@ async function initializeAuthenticatedApp(session) {
 async function handleSignOut() {
   if (realtimeChannel) await supabaseClient.removeChannel(realtimeChannel);
   realtimeChannel = null;
+  document.getElementById("telegram-connect-panel")?.remove();
   currentUser = null;
   authReady = false;
   tasks = [];
