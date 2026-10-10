@@ -459,6 +459,12 @@
           </div>
         </div>
 
+        <div class="form-group">
+          <label id="form-color-label">Color</label>
+          <input type="hidden" id="form-color" value="" />
+          <div class="color-swatches" id="form-color-swatches" role="radiogroup" aria-labelledby="form-color-label"></div>
+        </div>
+
         <div class="form-row">
           <div class="form-group">
             <label for="form-duration">Duration</label>
@@ -574,6 +580,28 @@
             <label class="day-toggle"><input type="checkbox" name="repeat-day" value="5" /><span>Fri</span></label>
             <label class="day-toggle"><input type="checkbox" name="repeat-day" value="6" /><span>Sat</span></label>
             <label class="day-toggle"><input type="checkbox" name="repeat-day" value="0" /><span>Sun</span></label>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="repeat-form-plan-time">Start time</label>
+            <select id="repeat-form-plan-time" class="input">
+              <option value="">Not scheduled</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="repeat-form-duration">Duration</label>
+            <select id="repeat-form-duration" class="input">
+              <option value="15">15 min</option>
+              <option value="30">30 min</option>
+              <option value="45">45 min</option>
+              <option value="60" selected>60 min</option>
+              <option value="90">90 min</option>
+              <option value="120">120 min</option>
+              <option value="150">150 min</option>
+              <option value="180">180 min</option>
+            </select>
           </div>
         </div>
 

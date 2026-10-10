@@ -308,6 +308,75 @@ function formatClock(total) {
   return `${h12}:${String(m).padStart(2, "0")} ${h24 < 12 ? "AM" : "PM"}`;
 }
 
+/* ==================================================
+   TASK COLORS
+   A task can carry its own colour (hex). With none, it uses its subject colour.
+   Saved in the cloud "color" column when it exists, and always on this device.
+================================================== */
+const TASK_COLORS = [
+  { name: "Red", hex: "#e5484d" },
+  { name: "Orange", hex: "#f08a24" },
+  { name: "Yellow", hex: "#d9a400" },
+  { name: "Green", hex: "#2f9e5b" },
+  { name: "Teal", hex: "#0e9aa7" },
+  { name: "Blue", hex: "#3b6df0" },
+  { name: "Purple", hex: "#8a5cf6" },
+  { name: "Pink", hex: "#e0489a" },
+  { name: "Brown", hex: "#9a6b4b" },
+  { name: "Gray", hex: "#6b7686" }
+];
+const TASK_COLOR_LOCAL_KEY = "study_task_colors_v1";
+let colorColumnOk = true;
+let colorLocalCache = null;
+
+function normalizeColor(value) {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value.trim()) ? value.trim().toLowerCase() : null;
+}
+
+// Inline style that swaps the subject colour variables for the task's own colour
+function taskColorStyle(task) {
+  const c = task && normalizeColor(task.color);
+  if (!c) return "";
+  return `--s:${c};--s-ink:color-mix(in srgb, ${c} 68%, var(--ink));--s-bg:color-mix(in srgb, ${c} 15%, transparent);`;
+}
+
+function taskStyleAttr(task) {
+  const st = taskColorStyle(task);
+  return st ? ` style="${st}"` : "";
+}
+
+function readColorLocal() {
+  try { return JSON.parse(localStorage.getItem(TASK_COLOR_LOCAL_KEY)) || {}; } catch (err) { return {}; }
+}
+
+function writeColorLocal() {
+  const map = {};
+  tasks.forEach((t) => { const c = normalizeColor(t.color); if (c) map[t.id] = c; });
+  try { localStorage.setItem(TASK_COLOR_LOCAL_KEY, JSON.stringify(map)); } catch (err) {}
+}
+
+function buildColorSwatches() {
+  const box = $("form-color-swatches");
+  if (!box) return;
+  const items = [{ name: "Subject color", hex: "" }, ...TASK_COLORS];
+  box.innerHTML = items.map((c) => c.hex
+    ? `<button type="button" class="color-swatch" role="radio" aria-checked="false" data-color="${c.hex}" style="--sw:${c.hex}" aria-label="${c.name}" title="${c.name}"><i class="fa-solid fa-check" aria-hidden="true"></i></button>`
+    : `<button type="button" class="color-swatch is-default" role="radio" aria-checked="true" data-color="" aria-label="Use subject color" title="Use subject color"><i class="fa-solid fa-ban" aria-hidden="true"></i></button>`
+  ).join("");
+  box.addEventListener("click", (e) => {
+    const btn = e.target.closest(".color-swatch");
+    if (btn) setFormColor(btn.dataset.color);
+  });
+}
+
+function setFormColor(hex) {
+  const value = normalizeColor(hex) || "";
+  $("form-color").value = value;
+  document.querySelectorAll("#form-color-swatches .color-swatch").forEach((b) => {
+    b.setAttribute("aria-checked", String(b.dataset.color === value));
+  });
+}
+
 // Safe defaults for tasks created before the planner existed
 function ensurePlannerFields(task) {
   const dur = Math.round(Number(task.durationMinutes));
@@ -394,6 +463,7 @@ function taskToRow(task) {
     end_date: task.endDate || null, last_done: task.lastDone || null, notes: task.notes || "",
     updated_at: new Date().toISOString()
   };
+  if (colorColumnOk) row.color = normalizeColor(task.color);
   if (plannerColumnsOk) {
     row.duration_minutes = task.durationMinutes ?? DEFAULT_DURATION;
     row.scheduled_date = task.scheduledDate || null;
@@ -408,6 +478,10 @@ function rowToTask(row) {
     completed: row.completed, recurring: row.recurring, dayOfWeek, endDate: row.end_date,
     lastDone: row.last_done, notes: row.notes || "", createdAt: row.created_at || null };
   if (repeatDays) task.repeatDays = repeatDays;
+  const cloudColor = "color" in row ? normalizeColor(row.color) : null;
+  const localColor = normalizeColor((colorLocalCache || {})[row.id]);
+  const color = cloudColor || localColor;
+  if (color) task.color = color;
   if ("duration_minutes" in row || "scheduled_date" in row || "start_time" in row) {
     task.durationMinutes = row.duration_minutes;
     task.scheduledDate = row.scheduled_date || null;
@@ -437,6 +511,8 @@ async function loadTasksFromCloud() {
     await saveTasksToCloud();
   } else {
     plannerLocalCache = readPlannerLocal();
+    colorLocalCache = readColorLocal();
+    colorColumnOk = "color" in data[0];
     plannerColumnsOk = "duration_minutes" in data[0] && "scheduled_date" in data[0] && "start_time" in data[0];
     tasks = data.map(rowToTask);
   }
@@ -462,6 +538,12 @@ async function saveTasksToCloud() {
         // Cloud table doesn't have the planner columns yet: save everything else, keep planner data on this device
         plannerColumnsOk = false;
         showToast("Planner times are saved on this device only until the cloud table gets its new columns.", "error");
+        ({ error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" }));
+      }
+      if (error && colorColumnOk && /color/i.test(`${error.message || ""}`)) {
+        // Cloud table has no "color" column yet: save everything else, keep colours on this device
+        colorColumnOk = false;
+        console.warn("Task colours are saved on this device only. Add a text column named color to the tasks table to sync them.");
         ({ error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" }));
       }
       if (error) throw error;
@@ -786,6 +868,7 @@ function checkDayRollover() {
 function saveTasks() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch (err) {}
   writePlannerLocal();
+  writeColorLocal();
   if (currentUser) saveTasksToCloud();
   if (syncFileHandle) writeTasksToSyncFile();
 }
@@ -883,6 +966,7 @@ function handleFormSubmit(e) {
   const dueDate = $("form-date").value;
   const priority = $("form-priority").value;
   const notes = $("form-notes").value.trim();
+  const color = normalizeColor($("form-color").value);
 
   if (!title || !dueDate) return;
 
@@ -911,7 +995,7 @@ function handleFormSubmit(e) {
   }
 
   if (id) {
-    tasks = tasks.map((t) => (t.id === id ? { ...t, title, subject, dueDate, priority, notes, durationMinutes, scheduledDate, startTime } : t));
+    tasks = tasks.map((t) => (t.id === id ? { ...t, title, subject, dueDate, priority, notes, durationMinutes, scheduledDate, startTime, color } : t));
   } else {
     tasks.push({
       id: `task-${Date.now()}`,
@@ -923,7 +1007,8 @@ function handleFormSubmit(e) {
       notes,
       durationMinutes,
       scheduledDate,
-      startTime
+      startTime,
+      color
     });
   }
 
@@ -969,6 +1054,14 @@ function handleRepeatFormSubmit(e) {
     return;
   }
 
+  // Optional start time: plans every occurrence at that time on its day
+  const planTime = $("repeat-form-plan-time").value;
+  const durationMinutes = Number($("repeat-form-duration").value) || DEFAULT_DURATION;
+  if (planTime && timeToMinutes(planTime) + durationMinutes > PLANNER_DAY_END) {
+    showToast(`That would run past ${formatClock(PLANNER_DAY_END)}. Shorten it or start earlier.`, "error");
+    return;
+  }
+
   const firstDay = [1, 2, 3, 4, 5, 6, 0].find((d) => days.includes(d));
   const task = {
     id: `repeat-${Date.now()}`,
@@ -980,7 +1073,10 @@ function handleRepeatFormSubmit(e) {
     recurring: true,
     dayOfWeek: days.length === 1 ? days[0] : firstDay,
     endDate,
-    notes: notesInput || `Recurring task (${describeRepeat(days)}) until ${endDate}`
+    notes: notesInput || `Recurring task (${describeRepeat(days)}) until ${endDate}`,
+    durationMinutes,
+    scheduledDate: planTime ? dueDate : null,
+    startTime: planTime || null
   };
   if (days.length > 1) task.repeatDays = days;
   tasks.push(task);
@@ -1016,6 +1112,7 @@ function openTaskModal(id = null, presetDate = null) {
     $("form-priority").value = task.priority;
     $("form-notes").value = task.notes || "";
     setDurationInputs(task.durationMinutes);
+    setFormColor(task.color);
     $("form-plan-date").value = task.dueDate;
     $("form-plan-time").value = task.startTime || "";
   } else {
@@ -1024,6 +1121,7 @@ function openTaskModal(id = null, presetDate = null) {
     $("form-date").value = presetDate || getRelativeDate(0);
     $("form-plan-date").value = $("form-date").value;
     setDurationInputs(60);
+    setFormColor("");
   }
   showOverlay(taskModal, "#form-title");
 }
@@ -1059,6 +1157,8 @@ function openRepeatTaskModal() {
   $("repeat-form-pattern").value = "weekly";
   $("repeat-form-day").value = String(new Date().getDay());
   $("repeat-form-priority").value = "Medium";
+  $("repeat-form-plan-time").value = "";
+  $("repeat-form-duration").value = "60";
   $("repeat-form-end-date").value = END_SCHEDULE_DATE;
   updateRepeatPatternUI();
   showOverlay(repeatTaskModal, "#repeat-form-title");
@@ -1074,7 +1174,7 @@ function viewTaskDetails(id) {
   detailsTaskId = id;
 
   $("detail-title").textContent = task.title;
-  $("detail-subject").innerHTML = subjectChipHTML(task.subject);
+  $("detail-subject").innerHTML = subjectChipHTML(task.subject, task);
   $("detail-date").textContent = formatDateReadable(task.dueDate);
   $("detail-priority").innerHTML = priorityHTML(task.priority);
   $("detail-duration").textContent = `${task.durationMinutes} min`;
@@ -1117,7 +1217,8 @@ function normalizeImportedTask(raw, index) {
     subject: ["Mathematics", "Chemistry", "Physics", "Other"].includes(raw.subject) ? raw.subject : "Other",
     priority: ["High", "Medium", "Low"].includes(raw.priority) ? raw.priority : "Medium",
     completed: Boolean(raw.completed),
-    notes: typeof raw.notes === "string" ? raw.notes : ""
+    notes: typeof raw.notes === "string" ? raw.notes : "",
+    color: normalizeColor(raw.color) || undefined
   };
 }
 
@@ -1443,10 +1544,10 @@ function subjectClass(subject) {
   return "s-other";
 }
 
-function subjectChipHTML(subject) {
+function subjectChipHTML(subject, task) {
   const icons = { Mathematics: "fa-calculator", Chemistry: "fa-flask", Physics: "fa-atom" };
   const icon = icons[subject] || "fa-book";
-  return `<span class="chip chip-subject ${subjectClass(subject)}"><i class="fa-solid ${icon}" aria-hidden="true"></i> ${escapeHtml(subject)}</span>`;
+  return `<span class="chip chip-subject ${subjectClass(subject)}"${taskStyleAttr(task)}><i class="fa-solid ${icon}" aria-hidden="true"></i> ${escapeHtml(subject)}</span>`;
 }
 
 function priorityHTML(priority) {
@@ -1475,7 +1576,7 @@ function taskHTML(task, { compact = false } = {}) {
   const title = escapeHtml(task.title);
 
   return `
-    <article class="task ${subjectClass(task.subject)} ${task.completed ? "is-done" : ""} ${compact ? "is-compact" : ""}">
+    <article class="task ${subjectClass(task.subject)} ${task.completed ? "is-done" : ""} ${compact ? "is-compact" : ""}"${taskStyleAttr(task)}>
       <label class="check">
         <input type="checkbox" class="toggle-complete" data-id="${id}" ${task.completed ? "checked" : ""} aria-label="Mark ${title} as done" />
         <span class="check-box" aria-hidden="true"></span>
@@ -1484,7 +1585,7 @@ function taskHTML(task, { compact = false } = {}) {
         <span class="task-title">${title}</span>${task.recurring ? '<i class="fa-solid fa-arrows-rotate task-repeat" aria-hidden="true"></i><span class="sr-only"> ${escapeHtml(describeRepeat(repeatDaysOf(task)))}</span>' : ""}
       </button>
       <div class="task-meta">
-        ${subjectChipHTML(task.subject)}
+        ${subjectChipHTML(task.subject, task)}
         ${getDeadlineBadgeHTML(task.dueDate, task.completed)}
         ${priorityHTML(task.priority)}
       </div>
@@ -1630,7 +1731,7 @@ function plannerBlockHTML(it) {
 
   return `
     <div class="${classes}" data-drag-id="${id}" data-kind="block"
-         style="--row:${(it.start - PLANNER_DAY_START) / PLANNER_STEP};--span:${t.durationMinutes / PLANNER_STEP};--lane:${it.lane};--lanes:${it.lanes}"
+         style="--row:${(it.start - PLANNER_DAY_START) / PLANNER_STEP};--span:${t.durationMinutes / PLANNER_STEP};--lane:${it.lane};--lanes:${it.lanes};${taskColorStyle(t)}"
          ${afterDue ? 'title="Planned after its deadline"' : ""}>
       ${plannerCheckHTML(t)}
       <button type="button" class="pl-block-main" data-action="edit" data-id="${id}" aria-label="Edit ${escapeHtml(t.title)}, ${range}">
@@ -1644,12 +1745,12 @@ function plannerBlockHTML(it) {
 function plannerCardHTML(task) {
   const id = escapeHtml(task.id);
   return `
-    <article class="pl-card ${subjectClass(task.subject)}" data-drag-id="${id}" data-kind="card">
+    <article class="pl-card ${subjectClass(task.subject)}" data-drag-id="${id}" data-kind="card"${taskStyleAttr(task)}>
       ${plannerCheckHTML(task)}
       <button type="button" class="pl-card-main" data-action="edit" data-id="${id}" aria-label="Edit ${escapeHtml(task.title)}">${escapeHtml(task.title)}</button>
       <i class="fa-solid fa-grip-vertical pl-grip" aria-hidden="true"></i>
       <div class="pl-card-meta">
-        ${subjectChipHTML(task.subject)}
+        ${subjectChipHTML(task.subject, task)}
         <span class="chip chip-dur"><i class="fa-regular fa-clock" aria-hidden="true"></i> ${task.durationMinutes} min</span>
         ${priorityHTML(task.priority)}
         ${getDeadlineBadgeHTML(task.dueDate, false)}
@@ -1827,6 +1928,8 @@ function activateDrag() {
 
   const ghost = document.createElement("div");
   ghost.className = `pl-ghost ${subjectClass(task.subject)}`;
+  const ghostStyle = taskColorStyle(task);
+  if (ghostStyle) ghost.style.cssText = ghostStyle;
   ghost.innerHTML = `<strong>${escapeHtml(task.title)}</strong><span>${task.durationMinutes} min</span>`;
   document.body.appendChild(ghost);
   drag.ghost = ghost;
@@ -2074,17 +2177,20 @@ function onResizeCancel(e) { if (resize && e.pointerId === resize.pointerId) end
 /* ---------- Wiring ---------- */
 
 function populatePlanTimeOptions() {
-  const select = $("form-plan-time");
-  for (let m = PLANNER_DAY_START; m < PLANNER_DAY_END; m += PLANNER_STEP) {
-    const opt = document.createElement("option");
-    opt.value = minutesToTime(m);
-    opt.textContent = formatClock(m);
-    select.appendChild(opt);
-  }
+  ["form-plan-time", "repeat-form-plan-time"].forEach((selectId) => {
+    const select = $(selectId);
+    for (let m = PLANNER_DAY_START; m < PLANNER_DAY_END; m += PLANNER_STEP) {
+      const opt = document.createElement("option");
+      opt.value = minutesToTime(m);
+      opt.textContent = formatClock(m);
+      select.appendChild(opt);
+    }
+  });
 }
 
 function setupPlannerEvents() {
   populatePlanTimeOptions();
+  buildColorSwatches();
   applyPlannerViewerPos();
 
   const view = $("view-planner");
