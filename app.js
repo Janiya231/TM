@@ -246,6 +246,23 @@ function getFollowingDate(days, dateKey) {
   return toDateKey(d);
 }
 
+// Moves a repeating task to `newDateKey` and shifts its whole weekday pattern by
+// the same number of days, so every later repeat counts from the date you chose.
+// e.g. a weekly Saturday task dragged to Monday becomes "every Monday".
+function reanchorRecurring(task, newDateKey) {
+  if (!task || !task.recurring || !newDateKey) return;
+  const days = repeatDaysOf(task);
+  const delta = daysBetween(task.dueDate, newDateKey);
+  if (days.length && delta !== 0) {
+    const shifted = days.map((d) => (((d + delta) % 7) + 7) % 7);
+    task.repeatDays = shifted.length > 1 ? shifted : undefined;
+    task.dayOfWeek = shifted.length > 1
+      ? [1, 2, 3, 4, 5, 6, 0].find((d) => shifted.includes(d))
+      : shifted[0];
+  }
+  task.dueDate = newDateKey;
+}
+
 // The cloud table only has a single integer `day_of_week` column. Single-day
 // tasks keep their plain 0-6 value; multi-day patterns are stored as 100 + a
 // bitmask of the days, so no database change is needed.
@@ -930,7 +947,9 @@ function toggleTaskComplete(id) {
   const logSnapshot = CompletionLog.snapshot(task); // before the task moves to its next occurrence
 
   if (task.recurring && !task.completed) {
-    // Completing a recurring task moves it to its next matching day
+    // Completing a recurring task moves it to its next matching day.
+    // If it was dragged to another date, count the repeats from that date.
+    if (task.scheduledDate && task.scheduledDate !== task.dueDate) reanchorRecurring(task, task.scheduledDate);
     const days = repeatDaysOf(task);
     const nextDueDate = getFollowingDate(days, task.dueDate);
     const maxEndDate = task.endDate || END_SCHEDULE_DATE;
@@ -995,7 +1014,13 @@ function handleFormSubmit(e) {
   }
 
   if (id) {
-    tasks = tasks.map((t) => (t.id === id ? { ...t, title, subject, dueDate, priority, notes, durationMinutes, scheduledDate, startTime, color } : t));
+    tasks = tasks.map((t) => {
+      if (t.id !== id) return t;
+      const updated = { ...t, title, subject, priority, notes, durationMinutes, scheduledDate, startTime, color };
+      if (updated.recurring) { updated.dueDate = t.dueDate; reanchorRecurring(updated, dueDate); }
+      else updated.dueDate = dueDate;
+      return updated;
+    });
   } else {
     tasks.push({
       id: `task-${Date.now()}`,
@@ -2099,6 +2124,7 @@ function applyDrop(d) {
   if (task.scheduledDate === t.date && task.startTime === time) { flushPlannerRender(); return; }
 
   // Same task object is updated in place, so nothing is ever duplicated
+  if (task.recurring) reanchorRecurring(task, t.date); // repeats now count from the dropped date
   task.scheduledDate = t.date;
   task.startTime = time;
   commit();
