@@ -519,7 +519,7 @@
         <h2 id="repeat-modal-title"><i class="fa-solid fa-arrows-rotate"></i> Add repeating task</h2>
         <button type="button" id="repeat-modal-close-btn" class="icon-btn" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
       </div>
-      <p class="modal-text">Choose how often this task comes back. Each time you tick it off, it moves to the next matching day until the end date.</p>
+      <p class="modal-text">Choose how often this task comes back. Each time you tick it off, it moves to the next matching day until the end date. For several days a week, you can create one separate task per day.</p>
       <form id="repeat-task-form">
         <div class="form-group">
           <label for="repeat-form-title">Title <span class="required">*</span></label>
@@ -583,6 +583,19 @@
           </div>
         </div>
 
+        <div class="form-group hidden" id="repeat-split-group">
+          <label class="check-line" for="repeat-form-split">
+            <input type="checkbox" id="repeat-form-split" checked />
+            <span>Create a separate task for each day (each one repeats once a week)</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label id="repeat-form-color-label">Color</label>
+          <input type="hidden" id="repeat-form-color" value="" />
+          <div class="color-swatches" id="repeat-form-color-swatches" role="radiogroup" aria-labelledby="repeat-form-color-label"></div>
+        </div>
+
         <div class="form-row">
           <div class="form-group">
             <label for="repeat-form-plan-time">Start time</label>
@@ -601,7 +614,12 @@
               <option value="120">120 min</option>
               <option value="150">150 min</option>
               <option value="180">180 min</option>
+              <option value="custom">Custom</option>
             </select>
+          </div>
+          <div class="form-group hidden" id="repeat-form-duration-custom-group">
+            <label for="repeat-form-duration-custom">Custom (minutes)</label>
+            <input type="number" id="repeat-form-duration-custom" class="input" min="5" max="480" step="5" value="45" inputmode="numeric" />
           </div>
         </div>
 
@@ -648,6 +666,7 @@
       </div>
       <div class="modal-actions">
         <button type="button" id="details-ok-btn" class="btn btn-secondary">Close</button>
+        <button type="button" id="details-duplicate-btn" class="btn btn-secondary"><i class="fa-solid fa-copy"></i> Duplicate</button>
         <button type="button" id="details-edit-btn" class="btn btn-primary"><i class="fa-solid fa-pen"></i> Edit task</button>
       </div>
     </div>

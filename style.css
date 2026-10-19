@@ -1487,3 +1487,8 @@ body.is-planner-resizing * { cursor: ns-resize !important; user-select: none; -w
 
 /* A task with its own colour gets a colour edge in the list too */
 .task[style*="--s:"] { box-shadow: inset 4px 0 0 var(--s); }
+
+
+/* Checkbox row (repeat form: one task per day) */
+.check-line { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; font-weight: 600; line-height: 1.4; }
+.check-line input { margin-top: 3px; width: 18px; height: 18px; accent-color: var(--brand); flex: none; }

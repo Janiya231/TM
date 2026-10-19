@@ -373,7 +373,12 @@ function writeColorLocal() {
 }
 
 function buildColorSwatches() {
-  const box = $("form-color-swatches");
+  buildColorSwatchesFor("form");
+  buildColorSwatchesFor("repeat-form");
+}
+
+function buildColorSwatchesFor(prefix) {
+  const box = $(`${prefix}-color-swatches`);
   if (!box) return;
   const items = [{ name: "Subject color", hex: "" }, ...TASK_COLORS];
   box.innerHTML = items.map((c) => c.hex
@@ -382,14 +387,14 @@ function buildColorSwatches() {
   ).join("");
   box.addEventListener("click", (e) => {
     const btn = e.target.closest(".color-swatch");
-    if (btn) setFormColor(btn.dataset.color);
+    if (btn) setFormColor(btn.dataset.color, prefix);
   });
 }
 
-function setFormColor(hex) {
+function setFormColor(hex, prefix = "form") {
   const value = normalizeColor(hex) || "";
-  $("form-color").value = value;
-  document.querySelectorAll("#form-color-swatches .color-swatch").forEach((b) => {
+  $(`${prefix}-color`).value = value;
+  document.querySelectorAll(`#${prefix}-color-swatches .color-swatch`).forEach((b) => {
     b.setAttribute("aria-checked", String(b.dataset.color === value));
   });
 }
@@ -760,6 +765,7 @@ function setupEventListeners() {
   $("repeat-form-pattern").addEventListener("change", updateRepeatPatternUI);
 
   $("form-duration").addEventListener("change", syncDurationUI);
+  $("repeat-form-duration").addEventListener("change", syncRepeatDurationUI);
   // Plan date is always the same as the due date
   $("form-plan-date").disabled = true;
   $("form-date").addEventListener("input", () => {
@@ -769,6 +775,11 @@ function setupEventListeners() {
   // Details modal
   $("details-close-btn").addEventListener("click", () => hideOverlay(detailsModal));
   $("details-ok-btn").addEventListener("click", () => hideOverlay(detailsModal));
+  $("details-duplicate-btn").addEventListener("click", () => {
+    const id = detailsTaskId;
+    hideOverlay(detailsModal);
+    if (id) duplicateTask(id);
+  });
   $("details-edit-btn").addEventListener("click", () => {
     const id = detailsTaskId;
     hideOverlay(detailsModal);
@@ -820,6 +831,7 @@ function setupEventListeners() {
     switch (trigger.dataset.action) {
       case "view": viewTaskDetails(id); break;
       case "edit": openTaskModal(id); break;
+      case "duplicate": duplicateTask(id); break;
       case "delete": openDeleteModal(id); break;
       case "add-on": openTaskModal(null, trigger.dataset.date); break;
     }
@@ -1055,6 +1067,20 @@ function updateRepeatPatternUI() {
   const pattern = $("repeat-form-pattern").value;
   $("repeat-weekly-group").classList.toggle("hidden", pattern !== "weekly");
   $("repeat-custom-group").classList.toggle("hidden", pattern !== "custom");
+  // One-task-per-day only makes sense when the pattern covers more than one day
+  $("repeat-split-group").classList.toggle("hidden", pattern === "weekly");
+}
+
+function syncRepeatDurationUI() {
+  $("repeat-form-duration-custom-group").classList.toggle("hidden", $("repeat-form-duration").value !== "custom");
+}
+
+// Minutes from the repeat form, or null when a custom value is out of range
+function readRepeatDurationInput() {
+  const select = $("repeat-form-duration").value;
+  if (select !== "custom") return Number(select) || DEFAULT_DURATION;
+  const n = Math.round(Number($("repeat-form-duration-custom").value));
+  return n >= 5 && n <= 480 ? n : null;
 }
 
 function handleRepeatFormSubmit(e) {
@@ -1081,15 +1107,59 @@ function handleRepeatFormSubmit(e) {
 
   // Optional start time: plans every occurrence at that time on its day
   const planTime = $("repeat-form-plan-time").value;
-  const durationMinutes = Number($("repeat-form-duration").value) || DEFAULT_DURATION;
+  const durationMinutes = readRepeatDurationInput();
+  if (durationMinutes === null) {
+    showToast("Enter a duration between 5 and 480 minutes.", "error");
+    return;
+  }
   if (planTime && timeToMinutes(planTime) + durationMinutes > PLANNER_DAY_END) {
     showToast(`That would run past ${formatClock(PLANNER_DAY_END)}. Shorten it or start earlier.`, "error");
     return;
   }
 
+  const color = normalizeColor($("repeat-form-color").value);
+  const pattern = $("repeat-form-pattern").value;
+  const split = pattern !== "weekly" && days.length > 1 && $("repeat-form-split").checked;
+  const stamp = Date.now();
+
+  if (split) {
+    // One separate task per day (Mon..Fri etc.). Each repeats once a week on its own day.
+    const ordered = [1, 2, 3, 4, 5, 6, 0].filter((d) => days.includes(d));
+    let created = 0;
+    ordered.forEach((day) => {
+      const dayDue = getNextDateInSet([day]);
+      if (dayDue > endDate) return;
+      tasks.push({
+        id: `repeat-${stamp}-${day}`,
+        title,
+        subject,
+        dueDate: dayDue,
+        priority,
+        completed: false,
+        recurring: true,
+        dayOfWeek: day,
+        endDate,
+        notes: notesInput || `Recurring task (Every ${getDayName(day)}) until ${endDate}`,
+        durationMinutes,
+        scheduledDate: planTime ? dayDue : null,
+        startTime: planTime || null,
+        color
+      });
+      created++;
+    });
+    if (!created) {
+      showToast("The end date is before the first occurrence.", "error");
+      return;
+    }
+    closeRepeatTaskModal();
+    commit();
+    showToast(`${created} repeating tasks added, one for each day.`, "success");
+    return;
+  }
+
   const firstDay = [1, 2, 3, 4, 5, 6, 0].find((d) => days.includes(d));
   const task = {
-    id: `repeat-${Date.now()}`,
+    id: `repeat-${stamp}`,
     title,
     subject,
     dueDate,
@@ -1101,7 +1171,8 @@ function handleRepeatFormSubmit(e) {
     notes: notesInput || `Recurring task (${describeRepeat(days)}) until ${endDate}`,
     durationMinutes,
     scheduledDate: planTime ? dueDate : null,
-    startTime: planTime || null
+    startTime: planTime || null,
+    color
   };
   if (days.length > 1) task.repeatDays = days;
   tasks.push(task);
@@ -1109,6 +1180,24 @@ function handleRepeatFormSubmit(e) {
   closeRepeatTaskModal();
   commit();
   showToast("Repeating task added.", "success");
+}
+
+// Copies a task as a fresh, not-done task, then opens the copy so you can change its day
+function duplicateTask(id) {
+  const src = tasks.find((t) => t.id === id);
+  if (!src) return;
+  const copy = JSON.parse(JSON.stringify(src));
+  copy.id = `${src.recurring ? "repeat" : "task"}-${Date.now()}`;
+  copy.title = /\(copy\)$/i.test(src.title) ? src.title : `${src.title} (copy)`;
+  copy.completed = false;
+  delete copy.lastDone;
+  delete copy.completionHistory;
+  delete copy.actualMinutes;
+  delete copy.completedAt;
+  tasks.push(copy);
+  commit();
+  showToast("Task duplicated.", "success");
+  openTaskModal(copy.id);
 }
 
 function confirmDeleteTask() {
@@ -1184,6 +1273,9 @@ function openRepeatTaskModal() {
   $("repeat-form-priority").value = "Medium";
   $("repeat-form-plan-time").value = "";
   $("repeat-form-duration").value = "60";
+  $("repeat-form-split").checked = true;
+  setFormColor("", "repeat-form");
+  syncRepeatDurationUI();
   $("repeat-form-end-date").value = END_SCHEDULE_DATE;
   updateRepeatPatternUI();
   showOverlay(repeatTaskModal, "#repeat-form-title");
@@ -1616,6 +1708,7 @@ function taskHTML(task, { compact = false } = {}) {
       </div>
       <div class="task-actions">
         <button type="button" class="icon-btn" data-action="edit" data-id="${id}" aria-label="Edit ${title}"><i class="fa-solid fa-pen"></i></button>
+        <button type="button" class="icon-btn" data-action="duplicate" data-id="${id}" aria-label="Duplicate ${title}" title="Duplicate"><i class="fa-solid fa-copy"></i></button>
         <button type="button" class="icon-btn is-danger" data-action="delete" data-id="${id}" aria-label="Delete ${title}"><i class="fa-solid fa-trash"></i></button>
       </div>
     </article>`;
