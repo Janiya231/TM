@@ -290,10 +290,10 @@ function decodeRepeatDays(value) {
    dueDate stays the deadline; scheduledDate is when you plan to do it.
 ================================================== */
 
-const PLANNER_DAY_START = 4 * 60 + 30;   // 4:30 AM, in minutes from midnight
-const PLANNER_DAY_END = 23 * 60;    // 11:00 PM
+const PLANNER_DAY_START = 5 * 60;        // 5:00 AM, in minutes from midnight
+const PLANNER_DAY_END = 24 * 60;    // 12:00 AM (midnight at the end of the day)
 const PLANNER_STEP = 30;            // grid and snap size in minutes
-const PLANNER_SLOTS = (PLANNER_DAY_END - PLANNER_DAY_START) / PLANNER_STEP; // 37
+const PLANNER_SLOTS = (PLANNER_DAY_END - PLANNER_DAY_START) / PLANNER_STEP; // 38
 const DEFAULT_DURATION = 30;
 const DURATION_PRESETS = [15, 30, 45, 60, 90, 120, 150, 180];
 const PLANNER_LOCAL_KEY = "study_planner_v1";
@@ -319,7 +319,7 @@ function minutesToTime(total) {
 }
 
 function formatClock(total) {
-  const h24 = Math.floor(total / 60);
+  const h24 = Math.floor(total / 60) % 24; // 24:00 (end of day) shows as 12:00 AM
   const m = total % 60;
   const h12 = h24 % 12 || 12;
   return `${h12}:${String(m).padStart(2, "0")} ${h24 < 12 ? "AM" : "PM"}`;
@@ -1964,7 +1964,7 @@ function flushPlannerRender() {
 
 /* ---------- Drop-time maths (30-minute snapping) ---------- */
 
-// pixels from the top of the day column -> nearest 30-minute line (0 = 4:30 AM)
+// pixels from the top of the day column -> nearest 30-minute line (0 = 5:00 AM)
 function snapSlotIndex(pxFromTop, slotHeight) {
   return Math.max(0, Math.round(pxFromTop / slotHeight));
 }
