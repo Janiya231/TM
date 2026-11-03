@@ -168,7 +168,10 @@ a { color: inherit; }
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 .icon-btn:hover { background: var(--surface-2); color: var(--ink); }
-.icon-btn.is-danger:hover { background: var(--danger-bg); color: var(--danger); }
+/* Delete button: always clearly visible (red), stronger on hover */
+.icon-btn.is-danger { color: var(--danger); background: var(--danger-bg); }
+.icon-btn.is-danger:hover { background: color-mix(in srgb, var(--danger) 22%, transparent); color: var(--danger); }
+.icon-btn .icon-trash { display: block; flex: 0 0 auto; pointer-events: none; }
 
 .link-btn {
   border: 0;
