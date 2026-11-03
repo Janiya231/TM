@@ -292,7 +292,8 @@ function decodeRepeatDays(value) {
 
 const PLANNER_DAY_START = 5 * 60;        // 5:00 AM, in minutes from midnight
 const PLANNER_DAY_END = 24 * 60;    // 12:00 AM (midnight at the end of the day)
-const PLANNER_STEP = 30;            // grid and snap size in minutes
+const PLANNER_STEP = 30;            // grid rows, time labels and the time dropdowns stay at 30 minutes
+const PLANNER_SNAP = 15;            // dragging and resizing snap to 15 minutes
 const PLANNER_SLOTS = (PLANNER_DAY_END - PLANNER_DAY_START) / PLANNER_STEP; // 38
 const DEFAULT_DURATION = 30;
 const DURATION_PRESETS = [15, 30, 45, 60, 90, 120, 150, 180];
@@ -1228,6 +1229,7 @@ function openTaskModal(id = null, presetDate = null) {
     setDurationInputs(task.durationMinutes);
     setFormColor(task.color);
     $("form-plan-date").value = task.dueDate;
+    ensurePlanTimeOption($("form-plan-time"), task.startTime);
     $("form-plan-time").value = task.startTime || "";
   } else {
     modalTitle.textContent = "Add task";
@@ -1236,6 +1238,7 @@ function openTaskModal(id = null, presetDate = null) {
     $("form-plan-date").value = $("form-date").value;
     setDurationInputs(60);
     setFormColor("");
+    ensurePlanTimeOption($("form-plan-time"), null);
   }
   showOverlay(taskModal, "#form-title");
 }
@@ -1962,11 +1965,13 @@ function flushPlannerRender() {
   }
 }
 
-/* ---------- Drop-time maths (30-minute snapping) ---------- */
+/* ---------- Drop-time maths (15-minute snapping on a 30-minute grid) ---------- */
 
-// pixels from the top of the day column -> nearest 30-minute line (0 = 5:00 AM)
+// pixels from the top of the day column -> nearest 15-minute line, returned in
+// grid rows (0, 0.5, 1, 1.5 ...) where 0 = 5:00 AM and one row = 30 minutes
 function snapSlotIndex(pxFromTop, slotHeight) {
-  return Math.max(0, Math.round(pxFromTop / slotHeight));
+  const unit = PLANNER_SNAP / PLANNER_STEP;
+  return Math.max(0, Math.round(pxFromTop / (slotHeight * unit)) * unit);
 }
 
 function plannerTargetAt(x, y, task, offsetY) {
@@ -2256,9 +2261,9 @@ function onResizeMove(e) {
   if (!resize || e.pointerId !== resize.pointerId) return;
   const cr = resize.col.getBoundingClientRect();
   const slotH = cr.height / PLANNER_SLOTS;
-  const endIdx = Math.round((e.clientY - cr.top) / slotH);
+  const endIdx = snapSlotIndex(e.clientY - cr.top, slotH);
   const endMin = PLANNER_DAY_START + endIdx * PLANNER_STEP;
-  const dur = Math.max(PLANNER_STEP, Math.min(endMin - resize.startMin, PLANNER_DAY_END - resize.startMin));
+  const dur = Math.max(PLANNER_SNAP, Math.min(endMin - resize.startMin, PLANNER_DAY_END - resize.startMin));
   resize.newDur = dur;
 
   resize.block.style.setProperty("--span", dur / PLANNER_STEP);
@@ -2294,6 +2299,19 @@ function onResizeEnd(e) { if (resize && e.pointerId === resize.pointerId) endRes
 function onResizeCancel(e) { if (resize && e.pointerId === resize.pointerId) endResize(false); }
 
 /* ---------- Wiring ---------- */
+
+// The start-time dropdowns list every 30 minutes. A task dropped on a 15-minute
+// line (e.g. 9:15) is not in that list, so add it temporarily while editing.
+function ensurePlanTimeOption(select, time) {
+  select.querySelectorAll("option[data-extra]").forEach((o) => o.remove());
+  if (!time || [...select.options].some((o) => o.value === time)) return;
+  const opt = document.createElement("option");
+  opt.value = time;
+  opt.textContent = formatClock(timeToMinutes(time));
+  opt.dataset.extra = "1";
+  const after = [...select.options].find((o) => o.value && o.value > time);
+  select.insertBefore(opt, after || null);
+}
 
 function populatePlanTimeOptions() {
   ["form-plan-time", "repeat-form-plan-time"].forEach((selectId) => {
