@@ -1034,7 +1034,7 @@ select.input {
 
 /* ==========================================================
    WEEKLY PLANNER
-   Day columns with a 30-minute grid, 5:00 AM to 12:00 AM.
+   Day columns with a 30-minute grid, 3:00 AM to 12:00 AM.
    Task height comes from --span (duration / 30 min) multiplied
    by --pl-slot-h, so one number controls the whole time scale.
    ========================================================== */
@@ -1104,7 +1104,7 @@ select.input {
   position: sticky;
   left: 0;
   z-index: 5;
-  height: calc(var(--pl-slot-h) * 38);
+  height: calc(var(--pl-slot-h) * 42);
   background: var(--surface);
   border-right: 1px solid var(--line);
 }
@@ -1122,14 +1122,14 @@ select.input {
 
 .pl-col {
   position: relative;
-  height: calc(var(--pl-slot-h) * 38);
+  height: calc(var(--pl-slot-h) * 42);
   overflow: hidden;
   border-left: 1px solid var(--line);
   background-color: var(--surface);
   background-image:
     repeating-linear-gradient(to bottom, var(--line-strong) 0, var(--line-strong) 1px, transparent 1px, transparent calc(var(--pl-slot-h) * 2)),
     repeating-linear-gradient(to bottom, var(--line) 0, var(--line) 1px, transparent 1px, transparent var(--pl-slot-h));
-  /* day starts at 5:00, so the full-hour (strong) lines sit on every second slot from the top */
+  /* day starts at 3:00, so the full-hour (strong) lines sit on every second slot from the top */
   background-position: 0 0, 0 0;
   transition: background-color 0.12s ease;
 }

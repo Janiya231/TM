@@ -22,6 +22,9 @@ let authReady = false;
 let realtimeChannel = null;
 let saveInProgress = false;
 let queuedSave = false;
+let cloudLoaded = false;       // true once tasks were read from the cloud
+let cloudSeeded = false;       // true once this account has had its first load
+let cloudKnownIds = new Set(); // ids that exist in the cloud as far as this device knows
 let tasks = [];
 
 function showLogin(message = "") {
@@ -99,6 +102,9 @@ async function handleSignOut() {
   realtimeChannel = null;
   currentUser = null;
   authReady = false;
+  cloudLoaded = false;
+  cloudSeeded = false;
+  cloudKnownIds = new Set();
   tasks = [];
   AnalyticsEngine.invalidate();
   await supabaseClient.auth.signOut();
@@ -290,12 +296,13 @@ function decodeRepeatDays(value) {
    dueDate stays the deadline; scheduledDate is when you plan to do it.
 ================================================== */
 
-const PLANNER_DAY_START = 5 * 60;        // 5:00 AM, in minutes from midnight
+const PLANNER_DAY_START = 3 * 60;        // 3:00 AM, in minutes from midnight
 const PLANNER_DAY_END = 24 * 60;    // 12:00 AM (midnight at the end of the day)
 const PLANNER_STEP = 30;            // grid rows, time labels and the time dropdowns stay at 30 minutes
 const PLANNER_SNAP = 15;            // dragging and resizing snap to 15 minutes
-const PLANNER_SLOTS = (PLANNER_DAY_END - PLANNER_DAY_START) / PLANNER_STEP; // 38
+const PLANNER_SLOTS = (PLANNER_DAY_END - PLANNER_DAY_START) / PLANNER_STEP; // 42
 const DEFAULT_DURATION = 30;
+const MAX_DURATION = 1260;          // 21 hours = the whole planner day (3:00 AM to midnight)
 const DURATION_PRESETS = [15, 30, 45, 60, 90, 120, 150, 180];
 const PLANNER_LOCAL_KEY = "study_planner_v1";
 
@@ -403,7 +410,7 @@ function setFormColor(hex, prefix = "form") {
 // Safe defaults for tasks created before the planner existed
 function ensurePlannerFields(task) {
   const dur = Math.round(Number(task.durationMinutes));
-  task.durationMinutes = dur >= 5 && dur <= 480 ? dur : DEFAULT_DURATION;
+  task.durationMinutes = dur >= 5 && dur <= MAX_DURATION ? dur : DEFAULT_DURATION;
 
   const date = typeof task.scheduledDate === "string" ? task.scheduledDate.slice(0, 10) : "";
   const start = timeToMinutes(task.startTime);
@@ -441,10 +448,16 @@ function writePlannerLocal() {
   try { localStorage.setItem(PLANNER_LOCAL_KEY, JSON.stringify(map)); } catch (err) {}
 }
 
-function isMissingPlannerColumn(error) {
+function missingColumnFromError(error) {
   const text = `${error && error.message ? error.message : ""}`;
-  return /duration_minutes|scheduled_date|start_time/.test(text) ||
-    (error && (error.code === "PGRST204" || error.code === "42703"));
+  const m = /Could not find the '([^']+)' column/i.exec(text) || /column "?([a-z_]+)"? (?:of relation "?tasks"? )?does not exist/i.exec(text);
+  return m ? m[1] : null;
+}
+
+function isMissingPlannerColumn(error) {
+  const col = missingColumnFromError(error);
+  if (col) return PLANNER_COLUMNS.includes(col);
+  return /duration_minutes|scheduled_date|start_time/.test(`${error && error.message ? error.message : ""}`);
 }
 
 function generateInitialTasks() {
@@ -478,6 +491,11 @@ function generateInitialTasks() {
 const STORAGE_KEY = "study_tasks_v2";
 const THEME_KEY = "study_theme";
 
+// Columns the cloud table doesn't have. Found automatically from the server's
+// "Could not find the 'x' column" error, so one missing column never blocks a save.
+const missingCloudColumns = new Set();
+const PLANNER_COLUMNS = ["duration_minutes", "scheduled_date", "start_time"];
+
 function taskToRow(task) {
   const row = {
     id: task.id, user_id: currentUser.id, title: task.title || "", subject: task.subject || "Other",
@@ -492,6 +510,7 @@ function taskToRow(task) {
     row.scheduled_date = task.scheduledDate || null;
     row.start_time = task.startTime || null;
   }
+  missingCloudColumns.forEach((col) => { delete row[col]; });
   return row;
 }
 
@@ -525,56 +544,74 @@ async function loadTasksFromCloud() {
   if (!currentUser) return;
   const { data, error } = await supabaseClient.from("tasks").select("*").eq("user_id", currentUser.id).order("due_date", { ascending: true });
   if (error) {
-    console.error(error);
-    showToast("Couldn't load your cloud tasks.", "error");
+    console.error("Cloud load failed:", error);
+    showToast(`Couldn't load your cloud tasks${error.message ? ` (${error.message})` : ""}`, "error");
     return;
   }
+  cloudLoaded = true;
   if (!data || data.length === 0) {
-    tasks = generateInitialTasks();
-    await saveTasksToCloud();
+    if (!cloudSeeded) {
+      cloudSeeded = true;
+      tasks = generateInitialTasks();
+      cloudKnownIds = new Set();
+      await saveTasksToCloud();
+    } else {
+      tasks = [];
+      cloudKnownIds = new Set();
+    }
   } else {
+    cloudSeeded = true;
     plannerLocalCache = readPlannerLocal();
     colorLocalCache = readColorLocal();
-    colorColumnOk = "color" in data[0];
-    plannerColumnsOk = "duration_minutes" in data[0] && "scheduled_date" in data[0] && "start_time" in data[0];
+    colorColumnOk = "color" in data[0] && !missingCloudColumns.has("color");
+    plannerColumnsOk = PLANNER_COLUMNS.every((c) => c in data[0]) && !PLANNER_COLUMNS.some((c) => missingCloudColumns.has(c));
     tasks = data.map(rowToTask);
+    cloudKnownIds = new Set(data.map(r => r.id));
   }
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch (err) {}
 }
 
+async function upsertTasksWithFallback() {
+  // Retry, dropping one unknown column at a time, until the server accepts the rows
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const { error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" });
+    if (!error) return;
+    const col = missingColumnFromError(error);
+    if (!col || missingCloudColumns.has(col)) throw error;
+    missingCloudColumns.add(col);
+    if (col === "color") {
+      colorColumnOk = false;
+      console.warn("Task colours are saved on this device only. Add a text column named color to the tasks table to sync them.");
+    } else if (PLANNER_COLUMNS.includes(col)) {
+      if (plannerColumnsOk) showToast("Planner times are saved on this device only until the cloud table gets its new columns.", "error");
+      plannerColumnsOk = false;
+    } else {
+      console.warn(`Cloud table has no "${col}" column, skipping it.`);
+    }
+  }
+  throw new Error("Too many missing cloud columns.");
+}
+
 async function saveTasksToCloud() {
   if (!currentUser) return;
+  if (!cloudLoaded) return; // never overwrite the cloud before it has been read once
   if (saveInProgress) { queuedSave = true; return; }
   saveInProgress = true;
   try {
-    const { data: existing, error: existingError } = await supabaseClient.from("tasks").select("id").eq("user_id", currentUser.id);
-    if (existingError) throw existingError;
+    // Only delete tasks this device actually loaded and has since removed
     const wantedIds = new Set(tasks.map(t => t.id));
-    const staleIds = (existing || []).map(r => r.id).filter(id => !wantedIds.has(id));
+    const staleIds = [...cloudKnownIds].filter(id => !wantedIds.has(id));
     if (staleIds.length) {
       const { error } = await supabaseClient.from("tasks").delete().eq("user_id", currentUser.id).in("id", staleIds);
       if (error) throw error;
     }
-    if (tasks.length) {
-      let { error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" });
-      if (error && plannerColumnsOk && isMissingPlannerColumn(error)) {
-        // Cloud table doesn't have the planner columns yet: save everything else, keep planner data on this device
-        plannerColumnsOk = false;
-        showToast("Planner times are saved on this device only until the cloud table gets its new columns.", "error");
-        ({ error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" }));
-      }
-      if (error && colorColumnOk && /color/i.test(`${error.message || ""}`)) {
-        // Cloud table has no "color" column yet: save everything else, keep colours on this device
-        colorColumnOk = false;
-        console.warn("Task colours are saved on this device only. Add a text column named color to the tasks table to sync them.");
-        ({ error } = await supabaseClient.from("tasks").upsert(tasks.map(taskToRow), { onConflict: "id" }));
-      }
-      if (error) throw error;
-    }
+    if (tasks.length) await upsertTasksWithFallback();
+    cloudKnownIds = new Set(tasks.map(t => t.id));
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch (err) {}
   } catch (err) {
-    console.error(err);
-    showToast("Cloud save failed. Please check your connection.", "error");
+    console.error("Cloud save failed:", err);
+    const detail = err && err.message ? ` (${err.message})` : "";
+    showToast(`Cloud save failed${detail}`, "error");
   } finally {
     saveInProgress = false;
     if (queuedSave) { queuedSave = false; saveTasksToCloud(); }
@@ -1004,7 +1041,7 @@ function handleFormSubmit(e) {
 
   const durationMinutes = readDurationInput();
   if (durationMinutes === null) {
-    showToast("Enter a duration between 5 and 480 minutes.", "error");
+    showToast(`Enter a duration between 5 and ${MAX_DURATION} minutes.`, "error");
     return;
   }
 
@@ -1081,7 +1118,7 @@ function readRepeatDurationInput() {
   const select = $("repeat-form-duration").value;
   if (select !== "custom") return Number(select) || DEFAULT_DURATION;
   const n = Math.round(Number($("repeat-form-duration-custom").value));
-  return n >= 5 && n <= 480 ? n : null;
+  return n >= 5 && n <= MAX_DURATION ? n : null;
 }
 
 function handleRepeatFormSubmit(e) {
@@ -1110,7 +1147,7 @@ function handleRepeatFormSubmit(e) {
   const planTime = $("repeat-form-plan-time").value;
   const durationMinutes = readRepeatDurationInput();
   if (durationMinutes === null) {
-    showToast("Enter a duration between 5 and 480 minutes.", "error");
+    showToast(`Enter a duration between 5 and ${MAX_DURATION} minutes.`, "error");
     return;
   }
   if (planTime && timeToMinutes(planTime) + durationMinutes > PLANNER_DAY_END) {
@@ -1262,7 +1299,7 @@ function readDurationInput() {
   const select = $("form-duration").value;
   if (select !== "custom") return Number(select);
   const n = Math.round(Number($("form-duration-custom").value));
-  return n >= 5 && n <= 480 ? n : null;
+  return n >= 5 && n <= MAX_DURATION ? n : null;
 }
 
 function closeTaskModal() {
@@ -1968,7 +2005,7 @@ function flushPlannerRender() {
 /* ---------- Drop-time maths (15-minute snapping on a 30-minute grid) ---------- */
 
 // pixels from the top of the day column -> nearest 15-minute line, returned in
-// grid rows (0, 0.5, 1, 1.5 ...) where 0 = 5:00 AM and one row = 30 minutes
+// grid rows (0, 0.5, 1, 1.5 ...) where 0 = 3:00 AM and one row = 30 minutes
 function snapSlotIndex(pxFromTop, slotHeight) {
   const unit = PLANNER_SNAP / PLANNER_STEP;
   return Math.max(0, Math.round(pxFromTop / (slotHeight * unit)) * unit);
