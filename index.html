@@ -91,14 +91,8 @@
         <button type="button" class="nav-item" data-cmd="add-repeating" title="Add a task that repeats weekly">
           <i class="fa-solid fa-arrows-rotate"></i><span class="nav-text">Add repeating task</span>
         </button>
-        <button type="button" class="nav-item" data-cmd="export" title="Download all tasks as a JSON backup">
-          <i class="fa-solid fa-download"></i><span class="nav-text">Export backup</span>
-        </button>
-        <button type="button" class="nav-item" data-cmd="import" title="Restore tasks from a JSON backup">
-          <i class="fa-solid fa-upload"></i><span class="nav-text">Import backup</span>
-        </button>
-        <button type="button" class="nav-item" data-cmd="sync" title="Keep a JSON file on your device updated automatically">
-          <i class="fa-solid fa-rotate"></i><span class="nav-text">Sync to file</span>
+        <button type="button" class="nav-item" data-cmd="settings" title="Backup, clean-up and sync settings">
+          <i class="fa-solid fa-gear"></i><span class="nav-text">Settings</span>
         </button>
         <button type="button" class="nav-item" data-cmd="theme" title="Switch theme">
           <i class="fa-solid fa-circle-half-stroke"></i><span class="nav-text js-theme-label">Dark theme</span>
@@ -389,21 +383,45 @@
           <span class="sheet-icon"><i class="fa-solid fa-chart-line"></i></span>
           <span class="sheet-text"><strong>Mark analysis</strong><span>Open the marks dashboard</span></span>
         </a>
-        <button type="button" class="sheet-item" data-cmd="export">
-          <span class="sheet-icon"><i class="fa-solid fa-download"></i></span>
-          <span class="sheet-text"><strong>Export backup</strong><span>Download all tasks as JSON</span></span>
-        </button>
-        <button type="button" class="sheet-item" data-cmd="import">
-          <span class="sheet-icon"><i class="fa-solid fa-upload"></i></span>
-          <span class="sheet-text"><strong>Import backup</strong><span>Restore tasks from a JSON file</span></span>
-        </button>
-        <button type="button" class="sheet-item" data-cmd="sync">
-          <span class="sheet-icon"><i class="fa-solid fa-rotate"></i></span>
-          <span class="sheet-text"><strong>Sync to file</strong><span>Keep a JSON file updated on this device</span></span>
+        <button type="button" class="sheet-item" data-cmd="settings">
+          <span class="sheet-icon"><i class="fa-solid fa-gear"></i></span>
+          <span class="sheet-text"><strong>Settings</strong><span>Backup, clean-up and sync</span></span>
         </button>
         <button type="button" class="sheet-item" data-cmd="theme">
           <span class="sheet-icon"><i class="fa-solid fa-circle-half-stroke"></i></span>
           <span class="sheet-text"><strong class="js-theme-label">Dark theme</strong><span>Switch between light and dark</span></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SETTINGS SHEET ============ -->
+  <div id="settings-sheet" class="modal-overlay hidden">
+    <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="modal-header">
+        <h2 id="settings-title"><i class="fa-solid fa-gear"></i> Settings</h2>
+        <button type="button" class="icon-btn" data-close="settings-sheet" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="sheet-list">
+        <button type="button" class="sheet-item" data-cmd="export">
+          <span class="sheet-icon"><i class="fa-solid fa-download"></i></span>
+          <span class="sheet-text"><strong>Export tasks</strong><span>Download all tasks as a JSON backup</span></span>
+        </button>
+        <button type="button" class="sheet-item" data-cmd="import">
+          <span class="sheet-icon"><i class="fa-solid fa-upload"></i></span>
+          <span class="sheet-text"><strong>Import tasks</strong><span>Restore tasks from a JSON file</span></span>
+        </button>
+        <button type="button" class="sheet-item" data-cmd="cleanup">
+          <span class="sheet-icon"><i class="fa-solid fa-broom"></i></span>
+          <span class="sheet-text"><strong>Delete old tasks</strong><span>Remove tasks due more than 10 days ago</span></span>
+        </button>
+        <button type="button" class="sheet-item" data-cmd="auto-cleanup">
+          <span class="sheet-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></span>
+          <span class="sheet-text"><strong class="js-autoclean-label">Auto-delete old tasks: Off</strong><span>Remove tasks due more than 10 days ago, daily</span></span>
+        </button>
+        <button type="button" class="sheet-item" data-cmd="sync">
+          <span class="sheet-icon"><i class="fa-solid fa-rotate"></i></span>
+          <span class="sheet-text"><strong>Sync to file</strong><span>Keep a JSON file updated on this device</span></span>
         </button>
       </div>
     </div>

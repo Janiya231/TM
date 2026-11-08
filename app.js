@@ -93,6 +93,7 @@ async function initializeAuthenticatedApp(session) {
   setAuthBusy(false);
   lockHelp.textContent = `Signed in as ${currentUser.email}`;
   await loadTasksFromCloud();
+  runAutoCleanup();
   setupRealtimeSync();
   renderApp();
 }
@@ -468,7 +469,7 @@ function generateInitialTasks() {
     const nextDueDate = getNextDateForDay(def.dayOfWeek, today);
     if (nextDueDate <= (def.endDate || END_SCHEDULE_DATE)) {
       list.push({
-        id: `fixed-${index}-${def.dayOfWeek}`,
+        id: `fixed-${currentUser ? currentUser.id.slice(0, 8) + "-" : ""}${index}-${def.dayOfWeek}`,
         title: def.title,
         subject: def.subject,
         dueDate: nextDueDate,
@@ -670,6 +671,7 @@ const detailsModal = $("details-modal");
 const deleteModal = $("delete-modal");
 const importModal = $("import-modal");
 const moreSheet = $("more-sheet");
+const settingsSheet = $("settings-sheet");
 const importSummary = $("import-summary");
 const importFileInput = $("import-file-input");
 const toastContainer = $("toast-container");
@@ -757,7 +759,7 @@ function hideOverlay(el) {
 
 function closeAllModals() {
   if (!document.querySelector(".modal-overlay:not(.hidden)")) return;
-  [taskModal, repeatTaskModal, detailsModal, deleteModal, importModal, moreSheet].forEach((el) => hideOverlay(el));
+  [taskModal, repeatTaskModal, detailsModal, deleteModal, importModal, moreSheet, settingsSheet].forEach((el) => hideOverlay(el));
   pendingDeleteId = null;
   pendingImport = null;
   importFileInput.value = "";
@@ -789,6 +791,12 @@ function setupEventListeners() {
   // Close the More sheet when a link/command inside it is used
   moreSheet.addEventListener("click", (e) => {
     if (e.target.closest("a, [data-cmd], [data-go]")) hideOverlay(moreSheet);
+  });
+
+  // Close the Settings sheet after a command, except the auto-delete switch (so its label updates in view)
+  settingsSheet.addEventListener("click", (e) => {
+    const c = e.target.closest("[data-cmd]");
+    if (c && c.dataset.cmd !== "auto-cleanup") hideOverlay(settingsSheet);
   });
 
   // Task modal
@@ -902,12 +910,70 @@ function setupEventListeners() {
   });
 }
 
+// Non-repeating tasks whose due date is more than 10 days ago
+const AUTO_CLEAN_KEY = "study_auto_cleanup";
+
+function findOldTasks() {
+  const cutoff = getRelativeDate(-10);
+  return { cutoff, old: tasks.filter((t) => !t.recurring && t.dueDate && t.dueDate < cutoff) };
+}
+
+function removeTasksById(list) {
+  const ids = new Set(list.map((t) => t.id));
+  tasks = tasks.filter((t) => !ids.has(t.id));
+}
+
+function cleanupOldTasks() {
+  const { cutoff, old } = findOldTasks();
+  if (!old.length) { showToast("No tasks older than 10 days.", "success"); return; }
+  const ok = window.confirm(`Delete ${old.length} task${old.length === 1 ? "" : "s"} due before ${cutoff}?\n\nRepeating tasks are kept. This can't be undone, so use Export backup first if unsure.`);
+  if (!ok) return;
+  removeTasksById(old);
+  commit();
+  showToast(`Deleted ${old.length} old task${old.length === 1 ? "" : "s"}.`, "success");
+}
+
+function autoCleanupEnabled() {
+  try { return localStorage.getItem(AUTO_CLEAN_KEY) === "on"; } catch (err) { return false; }
+}
+
+function updateAutoCleanupLabels() {
+  const text = `Auto-delete old tasks: ${autoCleanupEnabled() ? "On" : "Off"}`;
+  document.querySelectorAll(".js-autoclean-label").forEach((el) => { el.textContent = text; });
+}
+
+// Runs after sign-in and when the day changes. Only acts when switched on and the cloud has been read.
+function runAutoCleanup() {
+  if (!autoCleanupEnabled() || !currentUser || !cloudLoaded) return;
+  const { old } = findOldTasks();
+  if (!old.length) return;
+  removeTasksById(old);
+  commit();
+  showToast(`Auto-deleted ${old.length} task${old.length === 1 ? "" : "s"} older than 10 days.`, "success");
+}
+
+function toggleAutoCleanup() {
+  const next = autoCleanupEnabled() ? "off" : "on";
+  try { localStorage.setItem(AUTO_CLEAN_KEY, next); } catch (err) {}
+  updateAutoCleanupLabels();
+  if (next === "on") {
+    const { old } = findOldTasks();
+    showToast(old.length ? `Auto-delete is on. ${old.length} old task${old.length === 1 ? "" : "s"} will be removed now.` : "Auto-delete is on.", "success");
+    runAutoCleanup();
+  } else {
+    showToast("Auto-delete is off.", "success");
+  }
+}
+
 function runCommand(name) {
   switch (name) {
     case "add": openTaskModal(); break;
     case "add-repeating": openRepeatTaskModal(); break;
     case "more": showOverlay(moreSheet); break;
+    case "settings": showOverlay(settingsSheet); break;
     case "export": exportTasks(); break;
+    case "cleanup": cleanupOldTasks(); break;
+    case "auto-cleanup": toggleAutoCleanup(); break;
     case "import": importFileInput.click(); break;
     case "sync": syncToFile(); break;
     case "theme": toggleTheme(); break;
@@ -924,6 +990,7 @@ function checkDayRollover() {
   const key = getRelativeDate(0);
   if (key !== lastRenderDay) {
     lastRenderDay = key;
+    runAutoCleanup();
     renderApp();
   }
 }
@@ -2873,6 +2940,7 @@ applyTheme(document.documentElement.getAttribute("data-theme") || "light");
 setupEventListeners();
 setupPlannerEvents();
 setupAnalyticsEvents();
+updateAutoCleanupLabels();
 setView(VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "home");
 tasks = [];
 renderApp();
