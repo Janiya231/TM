@@ -1053,6 +1053,8 @@ select.input {
 .pl-nav { display: flex; gap: 8px; }
 .pl-nav .btn { min-height: 42px; padding: 0 14px; }
 .pl-range { font-size: clamp(1.1rem, 0.95rem + 0.9vw, 1.5rem); font-weight: 800; }
+.pl-download { margin-left: auto; min-height: 42px; padding: 0 14px; }
+.pl-download:disabled { opacity: 0.6; cursor: progress; }
 
 .pl-layout { display: flex; flex-direction: column; gap: 16px; }
 .pl-layout[data-viewer="top"] .pl-viewer { order: 1; }

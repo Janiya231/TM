@@ -983,6 +983,7 @@ function runCommand(name) {
     case "plan-prev":
     case "plan-next":
     case "plan-today": plannerGo(name); break;
+    case "plan-png": downloadPlannerPNG(); break;
   }
 }
 
@@ -2037,6 +2038,274 @@ function renderPlanner() {
   scroller.scrollLeft = keepLeft;
 
   renderPlannerViewer();
+}
+
+/* ---------- Download the week as a PNG ---------- */
+// Drawn straight onto a canvas (no extra library), using the current theme colours.
+async function downloadPlannerPNG() {
+  const btn = document.querySelector('[data-cmd="plan-png"]');
+  if (btn) btn.disabled = true;
+  try {
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+
+    const cs = getComputedStyle(document.documentElement);
+    const v = (name, fallback) => (cs.getPropertyValue(name) || "").trim() || fallback;
+    const C = {
+      bg: v("--bg", "#edf1f6"), surface: v("--surface", "#fff"), surface2: v("--surface-2", "#f5f7fa"),
+      ink: v("--ink", "#141c2b"), ink2: v("--ink-2", "#465165"), ink3: v("--ink-3", "#5e6b80"),
+      line: v("--line", "#dbe1ea"), lineStrong: v("--line-strong", "#c3ccda"),
+      focus: v("--focus", "#2f5bff"), ok: v("--ok", "#11784a")
+    };
+    const subj = {
+      "s-maths": v("--maths", "#3352d6"), "s-chem": v("--chem", "#0a8a72"),
+      "s-phys": v("--phys", "#d9461a"), "s-other": v("--other", "#5f6c82")
+    };
+    const fontBody = v("--font-body", "system-ui, sans-serif");
+    const fontDisplay = v("--font-display", fontBody);
+
+    const days = plannerWeekDays();
+    const todayKey = getRelativeDate(0);
+
+    // Geometry (CSS px; the canvas is drawn at 2x for a sharp image)
+    const SCALE = 2;
+    const PAD = 28, TITLE_H = 74, HEAD_H = 56, GUTTER = 84, COL_W = 190, SLOT_H = 40, FOOT_H = 44;
+    const W = PAD * 2 + GUTTER + COL_W * 7;
+    const gridH = PLANNER_SLOTS * SLOT_H;
+    const H = PAD + TITLE_H + HEAD_H + gridH + FOOT_H + PAD / 2;
+    const gx = PAD + GUTTER;               // left edge of day columns
+    const gy = PAD + TITLE_H + HEAD_H;     // top edge of the time grid
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(W * SCALE);
+    canvas.height = Math.round(H * SCALE);
+    const ctx = canvas.getContext("2d");
+    ctx.scale(SCALE, SCALE);
+    ctx.textBaseline = "top";
+
+    const rrect = (x, y, w, h, r) => {
+      const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+      ctx.beginPath();
+      ctx.moveTo(x + rr, y);
+      ctx.arcTo(x + w, y, x + w, y + h, rr);
+      ctx.arcTo(x + w, y + h, x, y + h, rr);
+      ctx.arcTo(x, y + h, x, y, rr);
+      ctx.arcTo(x, y, x + w, y, rr);
+      ctx.closePath();
+    };
+    const fit = (text, maxW) => {            // single line with an ellipsis
+      if (ctx.measureText(text).width <= maxW) return text;
+      let t = text;
+      while (t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
+      return t.trimEnd() + "…";
+    };
+    const wrap = (text, maxW, maxLines) => {  // word wrap, last line gets an ellipsis
+      const words = String(text).split(/\s+/).filter(Boolean);
+      const lines = [];
+      let cur = "";
+      for (let i = 0; i < words.length; i++) {
+        const test = cur ? cur + " " + words[i] : words[i];
+        if (ctx.measureText(test).width <= maxW || !cur) { cur = test; }
+        else { lines.push(cur); cur = words[i]; }
+      }
+      if (cur) lines.push(cur);
+      if (lines.length > maxLines) {
+        const keep = lines.slice(0, maxLines);
+        keep[maxLines - 1] = fit(keep[maxLines - 1] + " " + lines.slice(maxLines).join(" "), maxW);
+        return keep;
+      }
+      return lines.map((l) => fit(l, maxW));
+    };
+
+    // Background + title
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = C.ink;
+    ctx.font = `800 28px ${fontDisplay}`;
+    ctx.fillText("Weekly planner", PAD, PAD);
+    ctx.fillStyle = C.ink2;
+    ctx.font = `600 16px ${fontBody}`;
+    ctx.fillText(plannerRangeLabel(days), PAD, PAD + 38);
+
+    // Board card
+    ctx.fillStyle = C.surface;
+    rrect(PAD, PAD + TITLE_H, W - PAD * 2, HEAD_H + gridH, 14);
+    ctx.fill();
+    ctx.strokeStyle = C.line;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.save();
+    rrect(PAD, PAD + TITLE_H, W - PAD * 2, HEAD_H + gridH, 14);
+    ctx.clip();
+
+    // Today column tint
+    days.forEach(({ key }, i) => {
+      if (key !== todayKey) return;
+      ctx.fillStyle = C.focus;
+      ctx.globalAlpha = 0.06;
+      ctx.fillRect(gx + i * COL_W, gy, COL_W, gridH);
+      ctx.globalAlpha = 1;
+    });
+
+    // Horizontal grid lines + time labels
+    ctx.font = `600 12px ${fontBody}`;
+    for (let i = 0; i <= PLANNER_SLOTS; i++) {
+      const y = gy + i * SLOT_H;
+      const minute = PLANNER_DAY_START + i * PLANNER_STEP;
+      const isHour = minute % 60 === 0;
+      ctx.strokeStyle = isHour ? C.lineStrong : C.line;
+      ctx.globalAlpha = isHour ? 0.9 : 0.55;
+      ctx.beginPath();
+      ctx.moveTo(gx, Math.round(y) + 0.5);
+      ctx.lineTo(gx + COL_W * 7, Math.round(y) + 0.5);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = isHour ? C.ink2 : C.ink3;
+      ctx.textAlign = "right";
+      const ty = Math.min(Math.max(y - 7, gy + 2), gy + gridH - 14);
+      ctx.fillText(formatClock(minute), gx - 10, ty);
+      ctx.textAlign = "left";
+    }
+
+    // Vertical day separators
+    ctx.strokeStyle = C.line;
+    for (let i = 0; i <= 7; i++) {
+      const x = Math.round(gx + i * COL_W) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(x, PAD + TITLE_H);
+      ctx.lineTo(x, gy + gridH);
+      ctx.stroke();
+    }
+
+    // Day headers
+    days.forEach(({ key, date }, i) => {
+      const x = gx + i * COL_W;
+      const isToday = key === todayKey;
+      if (isToday) {
+        ctx.fillStyle = C.focus;
+        ctx.globalAlpha = 0.12;
+        ctx.fillRect(x, PAD + TITLE_H, COL_W, HEAD_H);
+        ctx.globalAlpha = 1;
+      }
+      ctx.textAlign = "center";
+      ctx.fillStyle = isToday ? C.focus : C.ink;
+      ctx.font = `800 15px ${fontDisplay}`;
+      ctx.fillText(DAY_SHORT[date.getDay()].toUpperCase(), x + COL_W / 2, PAD + TITLE_H + 11);
+      ctx.fillStyle = isToday ? C.focus : C.ink2;
+      ctx.font = `600 13px ${fontBody}`;
+      ctx.fillText(date.toLocaleDateString("en-US", { month: "short", day: "numeric" }), x + COL_W / 2, PAD + TITLE_H + 32);
+      ctx.textAlign = "left";
+    });
+    ctx.strokeStyle = C.lineStrong;
+    ctx.beginPath();
+    ctx.moveTo(PAD, gy + 0.5);
+    ctx.lineTo(W - PAD, gy + 0.5);
+    ctx.stroke();
+
+    // Task blocks
+    let totalBlocks = 0;
+    days.forEach(({ key }, i) => {
+      const colX = gx + i * COL_W;
+      layoutPlannerDay(plannerDayItems(key)).forEach((it) => {
+        totalBlocks++;
+        const t = it.task;
+        const own = normalizeColor(t.color);
+        const color = t.completed ? C.ok : (own || subj[subjectClass(t.subject)] || subj["s-other"]);
+        const laneW = COL_W / it.lanes;
+        const x = colX + it.lane * laneW + 3;
+        const w = laneW - 6;
+        const y = gy + ((it.start - PLANNER_DAY_START) / PLANNER_STEP) * SLOT_H + 1.5;
+        const h = (t.durationMinutes / PLANNER_STEP) * SLOT_H - 3;
+
+        // body
+        ctx.fillStyle = C.surface;
+        rrect(x, y, w, h, 8);
+        ctx.fill();
+        ctx.fillStyle = t.completed ? C.surface2 : color;
+        ctx.globalAlpha = t.completed ? 1 : 0.16;
+        rrect(x, y, w, h, 8);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = t.completed ? C.lineStrong : color;
+        ctx.globalAlpha = t.completed ? 1 : 0.45;
+        ctx.lineWidth = 1;
+        if (it.overlaps) ctx.setLineDash([4, 3]);
+        rrect(x + 0.5, y + 0.5, w - 1, h - 1, 8);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+
+        // left accent bar
+        ctx.save();
+        rrect(x, y, w, h, 8);
+        ctx.clip();
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, 4, h);
+        ctx.restore();
+
+        // text
+        const tx = x + 11;
+        const tw = w - 17;
+        if (tw < 20) return;
+        ctx.save();
+        rrect(x, y, w, h, 8);
+        ctx.clip();
+        const title = (t.completed ? "✓ " : "") + t.title;
+        const range = `${formatClock(it.start)} – ${formatClock(it.end)}`;
+        const short = h < 40;
+        ctx.font = `700 ${short ? 12 : 13}px ${fontBody}`;
+        ctx.fillStyle = t.completed ? C.ink3 : C.ink;
+        const showTime = !short && h >= 46 && it.lanes < 3;
+        const maxLines = short ? 1 : Math.max(1, Math.floor((h - 10 - (showTime ? 15 : 0)) / 16));
+        const lines = wrap(title, tw, maxLines);
+        const lineH = short ? 14 : 16;
+        let ty = short ? y + (h - lineH) / 2 + 1 : y + 6;
+        lines.forEach((ln) => {
+          ctx.fillText(ln, tx, ty);
+          if (t.completed) {
+            const lw = ctx.measureText(ln).width;
+            ctx.fillRect(tx, ty + 7, lw, 1);
+          }
+          ty += lineH;
+        });
+        if (showTime) {
+          ctx.font = `500 11px ${fontBody}`;
+          ctx.fillStyle = C.ink2;
+          ctx.fillText(fit(`${range} · ${t.durationMinutes} min`, tw), tx, ty + 1);
+        }
+        ctx.restore();
+      });
+    });
+
+    ctx.restore(); // end board clip
+
+    // Footer
+    const fy = PAD + TITLE_H + HEAD_H + gridH + 16;
+    ctx.fillStyle = C.ink3;
+    ctx.font = `500 12px ${fontBody}`;
+    ctx.textAlign = "left";
+    ctx.fillText(`Task Manager · exported ${formatDateReadable(todayKey)}`, PAD, fy);
+    ctx.textAlign = "right";
+    ctx.fillText(`${totalBlocks} planned task${totalBlocks === 1 ? "" : "s"} this week`, W - PAD, fy);
+    ctx.textAlign = "left";
+
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("Could not create the image");
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `planner-${days[0].key}.png`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    showToast("Planner image downloaded.", "success");
+  } catch (err) {
+    console.error(err);
+    showToast("Couldn't create the planner image.", "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function renderPlannerViewer() {
