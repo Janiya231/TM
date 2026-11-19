@@ -957,9 +957,17 @@ select.input {
   .day-chip-num { font-size: 1.05rem; }
 }
 
-/* Tablet + desktop: sidebar replaces the bottom nav */
+/* Tablet + desktop: sidebar replaces the bottom nav.
+   The sidebar has two states, set on <html data-sidebar="...">:
+   collapsed = icon rail, expanded = icons + labels. */
 @media (min-width: 820px) {
-  .shell { display: grid; grid-template-columns: 78px minmax(0, 1fr); }
+  .shell {
+    --sb-w: 78px;
+    display: grid;
+    grid-template-columns: var(--sb-w) minmax(0, 1fr);
+    transition: grid-template-columns 0.22s ease;
+  }
+  :root[data-sidebar="expanded"] .shell { --sb-w: var(--sidebar-w); }
   .bottom-nav { display: none; }
 
   .sidebar {
@@ -970,6 +978,7 @@ select.input {
     flex-direction: column;
     gap: 8px;
     padding: 20px 12px;
+    overflow-x: hidden;
     overflow-y: auto;
     background: var(--surface);
     background: color-mix(in srgb, var(--surface) 88%, transparent);
@@ -977,6 +986,8 @@ select.input {
     backdrop-filter: blur(12px);
     border-right: 1px solid var(--line);
   }
+
+  /* Collapsed (icon rail) */
   .brand { justify-content: center; padding: 2px 0 16px; }
   .brand-text, .nav-text, .ext-icon { display: none; }
   .nav-item { justify-content: center; padding: 13px 0; }
@@ -987,6 +998,25 @@ select.input {
     padding: 0 5px;
     font-size: 0.68rem;
   }
+
+  /* Expanded (icons + labels) */
+  :root[data-sidebar="expanded"] .sidebar { padding: 24px 16px; }
+  :root[data-sidebar="expanded"] .brand { justify-content: flex-start; padding: 2px 8px 20px; }
+  :root[data-sidebar="expanded"] .brand-text { display: flex; }
+  :root[data-sidebar="expanded"] .nav-text,
+  :root[data-sidebar="expanded"] .ext-icon { display: inline; }
+  :root[data-sidebar="expanded"] .nav-item { justify-content: flex-start; padding: 11px 12px; }
+  :root[data-sidebar="expanded"] .nav-badge {
+    position: static;
+    min-width: 22px; height: 22px;
+    padding: 0 7px;
+    font-size: 0.75rem;
+  }
+
+  /* The expand / collapse button */
+  .nav-toggle { margin-top: 6px; border-top: 1px solid var(--line); border-radius: 0 0 12px 12px; padding-top: 14px; }
+  .nav-toggle i { transition: transform 0.22s ease; }
+  :root:not([data-sidebar="expanded"]) .nav-toggle i { transform: rotate(180deg); }
 
   .main { padding: 36px 36px 56px; }
 
@@ -1001,19 +1031,6 @@ select.input {
 }
 
 @media (min-width: 1100px) {
-  .shell { grid-template-columns: var(--sidebar-w) minmax(0, 1fr); }
-  .sidebar { padding: 24px 16px; }
-  .brand { justify-content: flex-start; padding: 2px 8px 20px; }
-  .brand-text { display: flex; }
-  .nav-text { display: inline; }
-  .ext-icon { display: inline; }
-  .nav-item { justify-content: flex-start; padding: 11px 12px; }
-  .nav-badge {
-    position: static;
-    min-width: 22px; height: 22px;
-    padding: 0 7px;
-    font-size: 0.75rem;
-  }
   .main { padding: 44px 52px 64px; }
 }
 

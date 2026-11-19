@@ -699,6 +699,41 @@ function toggleTheme() {
 }
 
 /* ==================================================
+   SIDEBAR (collapsed icon rail <-> expanded with labels)
+   With no saved choice it follows the screen width (expanded on wide
+   screens, collapsed on tablets). Once you use the toggle, that choice sticks.
+================================================== */
+
+const SIDEBAR_KEY = "study_sidebar";
+const sidebarWideMQ = window.matchMedia("(min-width: 1100px)");
+
+function getSidebarState() {
+  try {
+    const saved = localStorage.getItem(SIDEBAR_KEY);
+    if (saved === "expanded" || saved === "collapsed") return saved;
+  } catch (err) { /* private mode */ }
+  return sidebarWideMQ.matches ? "expanded" : "collapsed";
+}
+
+function applySidebar() {
+  const state = getSidebarState();
+  const expanded = state === "expanded";
+  document.documentElement.setAttribute("data-sidebar", state);
+  const label = expanded ? "Collapse menu" : "Expand menu";
+  document.querySelectorAll('[data-cmd="sidebar"]').forEach((btn) => {
+    btn.setAttribute("aria-expanded", String(expanded));
+    btn.setAttribute("title", label);
+  });
+  document.querySelectorAll(".js-sidebar-label").forEach((el) => { el.textContent = label; });
+}
+
+function toggleSidebar() {
+  const next = getSidebarState() === "expanded" ? "collapsed" : "expanded";
+  try { localStorage.setItem(SIDEBAR_KEY, next); } catch (err) { /* private mode */ }
+  applySidebar();
+}
+
+/* ==================================================
    NAVIGATION
 ================================================== */
 
@@ -977,6 +1012,7 @@ function runCommand(name) {
     case "import": importFileInput.click(); break;
     case "sync": syncToFile(); break;
     case "theme": toggleTheme(); break;
+    case "sidebar": toggleSidebar(); break;
     case "clear-filters": clearFilters(); break;
     case "clear-day": activeDayFilter = null; renderApp(); break;
     case "analytics-overdue": openAnalyticsOverdue(); break;
@@ -3206,6 +3242,8 @@ function setupAnalyticsEvents() {
 ================================================== */
 
 applyTheme(document.documentElement.getAttribute("data-theme") || "light");
+applySidebar();
+sidebarWideMQ.addEventListener("change", applySidebar);
 setupEventListeners();
 setupPlannerEvents();
 setupAnalyticsEvents();
