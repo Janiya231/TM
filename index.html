@@ -200,7 +200,7 @@
           </div>
 
           <div class="pl-layout" id="pl-layout" data-viewer="bottom">
-            <div class="pl-scroll" id="pl-scroll" tabindex="0" role="region" aria-label="Weekly timetable, 3:00 AM to 12:00 AM">
+            <div class="pl-scroll" id="pl-scroll" tabindex="0" role="region" aria-label="Weekly timetable">
               <div class="pl-board" id="pl-board"></div>
             </div>
 
@@ -434,6 +434,21 @@
           <span class="sheet-icon"><i class="fa-solid fa-rotate"></i></span>
           <span class="sheet-text"><strong>Sync to file</strong><span>Keep a JSON file updated on this device</span></span>
         </button>
+        <div class="sheet-item sheet-setting" role="group" aria-labelledby="set-plan-title">
+          <span class="sheet-icon"><i class="fa-solid fa-clock"></i></span>
+          <span class="sheet-text">
+            <strong id="set-plan-title">Planner hours</strong>
+            <span>Showing <span class="js-planner-hours-label">3:00 AM to 12:00 AM</span></span>
+            <span class="set-row">
+              <label class="sr-only" for="set-plan-start">Planner starts at</label>
+              <select id="set-plan-start" class="input"></select>
+              <span class="set-to">to</span>
+              <label class="sr-only" for="set-plan-end">Planner ends at</label>
+              <select id="set-plan-end" class="input"></select>
+              <button type="button" id="set-plan-reset" class="btn btn-secondary">Reset</button>
+            </span>
+          </span>
+        </div>
       </div>
     </div>
   </div>

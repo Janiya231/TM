@@ -297,13 +297,30 @@ function decodeRepeatDays(value) {
    dueDate stays the deadline; scheduledDate is when you plan to do it.
 ================================================== */
 
-const PLANNER_DAY_START = 3 * 60;        // 3:00 AM, in minutes from midnight
-const PLANNER_DAY_END = 24 * 60;    // 12:00 AM (midnight at the end of the day)
+const PLANNER_HOURS_KEY = "study_planner_hours";   // { start, end } in minutes from midnight
+const PLANNER_DEFAULT_START = 3 * 60;               // 3:00 AM
+const PLANNER_DEFAULT_END = 24 * 60;                // 12:00 AM (midnight at the end of the day)
+const PLANNER_MIN_SPAN = 2 * 60;                    // the visible day is at least 2 hours long
 const PLANNER_STEP = 30;            // grid rows, time labels and the time dropdowns stay at 30 minutes
 const PLANNER_SNAP = 15;            // dragging and resizing snap to 15 minutes
-const PLANNER_SLOTS = (PLANNER_DAY_END - PLANNER_DAY_START) / PLANNER_STEP; // 42
+
+// Visible hours of the planner day. Chosen in Settings and kept on this device.
+function readPlannerHours() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PLANNER_HOURS_KEY));
+    const s = Number(raw && raw.start), e = Number(raw && raw.end);
+    if (Number.isInteger(s) && Number.isInteger(e) && s >= 0 && e <= 24 * 60 && s % 60 === 0 && e % 60 === 0 && e - s >= PLANNER_MIN_SPAN) {
+      return { start: s, end: e };
+    }
+  } catch (err) { /* private mode or bad value */ }
+  return { start: PLANNER_DEFAULT_START, end: PLANNER_DEFAULT_END };
+}
+
+let PLANNER_DAY_START = readPlannerHours().start;
+let PLANNER_DAY_END = readPlannerHours().end;
+let PLANNER_SLOTS = (PLANNER_DAY_END - PLANNER_DAY_START) / PLANNER_STEP;
 const DEFAULT_DURATION = 30;
-const MAX_DURATION = 1260;          // 21 hours = the whole planner day (3:00 AM to midnight)
+const MAX_DURATION = 1260;          // 21 hours, the longest task. Fixed, so changing the planner hours never alters saved durations
 const DURATION_PRESETS = [15, 30, 45, 60, 90, 120, 150, 180];
 const PLANNER_LOCAL_KEY = "study_planner_v1";
 
@@ -2377,7 +2394,7 @@ function flushPlannerRender() {
 /* ---------- Drop-time maths (15-minute snapping on a 30-minute grid) ---------- */
 
 // pixels from the top of the day column -> nearest 15-minute line, returned in
-// grid rows (0, 0.5, 1, 1.5 ...) where 0 = 3:00 AM and one row = 30 minutes
+// grid rows (0, 0.5, 1, 1.5 ...) where 0 = the first visible hour and one row = 30 minutes
 function snapSlotIndex(pxFromTop, slotHeight) {
   const unit = PLANNER_SNAP / PLANNER_STEP;
   return Math.max(0, Math.round(pxFromTop / (slotHeight * unit)) * unit);
@@ -2725,17 +2742,81 @@ function ensurePlanTimeOption(select, time) {
 function populatePlanTimeOptions() {
   ["form-plan-time", "repeat-form-plan-time"].forEach((selectId) => {
     const select = $(selectId);
+    const keep = select.value;
+    select.querySelectorAll("option:not([value=\"\"])").forEach((o) => o.remove());
     for (let m = PLANNER_DAY_START; m < PLANNER_DAY_END; m += PLANNER_STEP) {
       const opt = document.createElement("option");
       opt.value = minutesToTime(m);
       opt.textContent = formatClock(m);
       select.appendChild(opt);
     }
+    if (keep && [...select.options].some((o) => o.value === keep)) select.value = keep;
   });
 }
 
-function setupPlannerEvents() {
+/* ---------- Planner hours (Settings) ---------- */
+
+function formatHourOption(total) { return formatClock(total); }
+
+function fillPlannerHoursSelects() {
+  const startSel = $("set-plan-start"), endSel = $("set-plan-end");
+  if (!startSel || !endSel) return;
+  startSel.innerHTML = "";
+  endSel.innerHTML = "";
+  for (let m = 0; m <= 23 * 60; m += 60) startSel.add(new Option(formatHourOption(m), String(m)));
+  for (let m = 60; m <= 24 * 60; m += 60) endSel.add(new Option(formatHourOption(m), String(m)));
+  startSel.value = String(PLANNER_DAY_START);
+  endSel.value = String(PLANNER_DAY_END);
+  const label = `${formatClock(PLANNER_DAY_START)} to ${formatClock(PLANNER_DAY_END)}`;
+  document.querySelectorAll(".js-planner-hours-label").forEach((el) => { el.textContent = label; });
+}
+
+function applyPlannerHours() {
+  PLANNER_SLOTS = (PLANNER_DAY_END - PLANNER_DAY_START) / PLANNER_STEP;
+  const view = $("view-planner");
+  if (view) view.style.setProperty("--pl-slots", String(PLANNER_SLOTS));
+  const scroller = $("pl-scroll");
+  if (scroller) scroller.setAttribute("aria-label", `Weekly timetable, ${formatClock(PLANNER_DAY_START)} to ${formatClock(PLANNER_DAY_END)}`);
   populatePlanTimeOptions();
+  fillPlannerHoursSelects();
+}
+
+function setPlannerHours(start, end) {
+  if (end - start < PLANNER_MIN_SPAN) {
+    showToast("The planner needs to cover at least 2 hours.", "error");
+    fillPlannerHoursSelects();
+    return;
+  }
+  // Never hide planned tasks: they stay scheduled, so the range has to keep them visible
+  const outside = tasks.filter((t) => {
+    if (!t.scheduledDate || !t.startTime) return false;
+    const s = timeToMinutes(t.startTime);
+    return s < start || s + t.durationMinutes > end;
+  }).length;
+  if (outside) {
+    showToast(`${outside} planned task${outside === 1 ? "" : "s"} would fall outside ${formatClock(start)} to ${formatClock(end)}. Move ${outside === 1 ? "it" : "them"} first.`, "error");
+    fillPlannerHoursSelects();
+    return;
+  }
+  PLANNER_DAY_START = start;
+  PLANNER_DAY_END = end;
+  try { localStorage.setItem(PLANNER_HOURS_KEY, JSON.stringify({ start, end })); } catch (err) { /* private mode */ }
+  plannerDidInitialScroll = false;
+  applyPlannerHours();
+  if (currentView === "planner") renderPlanner();
+  showToast(`Planner now shows ${formatClock(start)} to ${formatClock(end)}.`, "success");
+}
+
+function resetPlannerHours() {
+  setPlannerHours(PLANNER_DEFAULT_START, PLANNER_DEFAULT_END);
+}
+
+function setupPlannerEvents() {
+  applyPlannerHours();
+  const onHoursChange = () => setPlannerHours(Number($("set-plan-start").value), Number($("set-plan-end").value));
+  $("set-plan-start").addEventListener("change", onHoursChange);
+  $("set-plan-end").addEventListener("change", onHoursChange);
+  $("set-plan-reset").addEventListener("click", resetPlannerHours);
   buildColorSwatches();
   applyPlannerViewerPos();
 
